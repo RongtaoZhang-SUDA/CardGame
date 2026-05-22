@@ -1,0 +1,23 @@
+{
+  "name": "dormstone",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run build -w @dormstone/shared && concurrently -n server,web -c green,cyan \"npm run dev -w @dormstone/server\" \"npm run dev -w @dormstone/web\"",
+    "build": "npm run build -w @dormstone/shared && npm run build -w @dormstone/server && npm run build -w @dormstone/web",
+    "test": "npm run build -w @dormstone/shared && vitest run",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.14"
+  }
+}
+

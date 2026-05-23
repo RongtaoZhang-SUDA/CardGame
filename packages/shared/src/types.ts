@@ -267,6 +267,7 @@ export interface BoardMinion extends CardInstance {
   silenced: boolean;
   temporaryAttack: number;
   cannotAttack?: boolean;
+  untouchable?: boolean;
   frozenUntilTurn?: number;
   expiresAtEndOfTurn?: boolean;
   counterNextCardType?: "minion" | "spell";
@@ -317,6 +318,8 @@ export interface PlayerGameState {
     amount: number;
     throughTurn: number;
   };
+  avianaCountdown?: number;
+  avianaActive?: boolean;
 }
 
 export interface PublicCardInstance {

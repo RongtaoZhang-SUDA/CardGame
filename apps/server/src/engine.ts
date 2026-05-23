@@ -320,7 +320,7 @@ function applyRuleBattlecry(game: GameState, seat: Seat, card: CardDefinition, t
   if (hasRule(card, "priest_najark")) borrowEnemyMinion(game, seat, target, catalog, card.name);
   if (hasRule(card, "priest_loatheb")) taxNextSpells(game, other(seat), 5, card.name);
   if (hasRule(card, "priest_spawn_of_shadows")) damageBothHeroes(game, seat, 4, catalog);
-  if (hasRule(card, "priest_aviana")) setHandsToOneMana(game, catalog, card.name);
+  if (hasRule(card, "priest_aviana")) beginAvianaCountdown(game, seat, card.name);
   if (hasRule(card, "dragon_astalor")) astalorBloodsworn(game, seat, catalog);
   if (hasRule(card, "dragon_astalor_protector")) astalorProtector(game, seat, catalog);
   if (hasRule(card, "dragon_astalor_flamebringer")) dealRandomEnemyDamage(game, seat, player.maxMana >= 10 ? 14 : 7, catalog, card.name);
@@ -770,8 +770,9 @@ function summonPureNest(game: GameState, seat: Seat, catalog: Map<string, CardDe
   summon(game, seat, "dragon_pure_nest", 1, catalog);
 }
 
-function discoverDragon(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string, discount: number): void {
-  const pool = [...catalog.values()].filter((card) => card.collectible && card.type === "minion" && hasRace(card, "DRAGON"));
+function discoverDragon(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string, discount: number, excludedCardIds: string[] = []): void {
+  const excluded = new Set(excludedCardIds);
+  const pool = [...catalog.values()].filter((card) => card.collectible && card.type === "minion" && hasRace(card, "DRAGON") && !excluded.has(card.id));
   if (pool.length === 0) return;
   const random = rng(game.seed + game.turn * 433 + seat * 83 + pool.length);
   const picks: CardInstance[] = [];
@@ -916,10 +917,6 @@ function raiseDead(game: GameState, seat: Seat, catalog: Map<string, CardDefinit
 
 function swapHandWithDeckBottom(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
   const player = game.players[seat];
-  if (hasDuplicateCardIds(player.deck)) {
-    addLog(game, `${sourceName} 检查后发现牌库仍有重复牌。`);
-    return;
-  }
   const oldHand = player.hand;
   const replacement = player.deck.splice(Math.max(0, player.deck.length - oldHand.length));
   player.deck.push(...oldHand);
@@ -1165,6 +1162,25 @@ function damageBothHeroes(game: GameState, seat: Seat, amount: number, catalog: 
   dealDamage(game, { type: "hero", seat: other(seat) }, amount, seat, catalog, false);
 }
 
+function beginAvianaCountdown(game: GameState, seat: Seat, sourceName: string): void {
+  game.players[seat].avianaCountdown = 3;
+  game.players[seat].avianaActive = false;
+  addLog(game, `${sourceName} 唤起月相：3 个己方回合后，你的卡牌法力值消耗变为 1。`);
+}
+
+function tickAvianaCountdown(game: GameState, seat: Seat): void {
+  const player = game.players[seat];
+  if (player.avianaActive || player.avianaCountdown === undefined) return;
+  player.avianaCountdown -= 1;
+  if (player.avianaCountdown <= 0) {
+    player.avianaActive = true;
+    delete player.avianaCountdown;
+    addLog(game, `${player.nickname} 的满月升起，卡牌法力值消耗变为 1。`);
+  } else {
+    addLog(game, `${player.nickname} 的艾维娜月相还剩 ${player.avianaCountdown} 个己方回合。`);
+  }
+}
+
 function setHandsToOneMana(game: GameState, catalog: Map<string, CardDefinition>, sourceName: string): void {
   for (const player of game.players) {
     for (const card of player.hand) card.costOverride = 1;
@@ -1237,6 +1253,7 @@ function attack(game: GameState, actorSeat: Seat, source: TargetRef, target: Tar
   if (source.seat !== actorSeat) throw new Error("只能操作自己的角色。");
   if (target.seat === actorSeat) throw new Error("不能攻击己方角色。");
   enforceTaunt(game, actorSeat, target);
+  if (isUntouchableTarget(game, target)) throw new Error("这个随从无法被攻击。");
 
   if (source.type === "hero") {
     const player = game.players[actorSeat];
@@ -1288,6 +1305,7 @@ function startTurn(game: GameState, seat: Seat, catalog: Map<string, CardDefinit
   player.hero.attacksThisTurn = 0;
   player.hero.temporaryAttack = 0;
   rollRenoBullet(game, seat, catalog);
+  tickAvianaCountdown(game, seat);
   resolveStartTurnRules(game, seat, catalog);
   for (const minion of player.board) {
     minion.exhausted = false;
@@ -1321,7 +1339,7 @@ function resolveStartTurnRules(game: GameState, seat: Seat, catalog: Map<string,
   if (game.pendingChoice) return;
   for (const minion of game.players[seat].board) {
     if (!minion.silenced && hasRule(getCard(catalog, minion.cardId), "dragon_pure_nest")) {
-      discoverDragon(game, seat, catalog, "纯净龙巢", -4);
+      discoverDragon(game, seat, catalog, "纯净龙巢", -4, ["dragon_rheastrasza"]);
       return;
     }
   }
@@ -1394,21 +1412,24 @@ function resolveEffectTargets(game: GameState, effect: CardEffect, context: Effe
   if (targetKind === "none") return [];
   if (targetKind === "selected") {
     if (!context.selectedTarget) throw new Error("需要选择目标。");
+    if (isUntouchableTarget(game, context.selectedTarget)) throw new Error("这个随从无法成为目标。");
     return [context.selectedTarget];
   }
   if (targetKind === "own_hero") return [{ type: "hero", seat: context.sourceOwner }];
   if (targetKind === "enemy_hero") return [{ type: "hero", seat: enemy }];
-  if (targetKind === "all_enemies") return [{ type: "hero", seat: enemy }, ...game.players[enemy].board.map((minion) => ({ type: "minion" as const, seat: enemy, instanceId: minion.instanceId }))];
-  if (targetKind === "all_enemy_minions") return game.players[enemy].board.map((minion) => ({ type: "minion" as const, seat: enemy, instanceId: minion.instanceId }));
-  if (targetKind === "all_minions") return game.players.flatMap((player) => player.board.map((minion) => ({ type: "minion" as const, seat: player.seat, instanceId: minion.instanceId })));
+  if (targetKind === "all_enemies") return [{ type: "hero", seat: enemy }, ...touchableMinionTargets(game.players[enemy].board, enemy)];
+  if (targetKind === "all_enemy_minions") return touchableMinionTargets(game.players[enemy].board, enemy);
+  if (targetKind === "all_minions") return game.players.flatMap((player) => touchableMinionTargets(player.board, player.seat));
   if (targetKind === "any_minion") {
     if (!context.selectedTarget || context.selectedTarget.type !== "minion") throw new Error("需要选择一个随从。");
+    if (isUntouchableTarget(game, context.selectedTarget)) throw new Error("这个随从无法成为目标。");
     return [context.selectedTarget];
   }
   if (targetKind === "friendly_minion" || targetKind === "enemy_minion") {
     if (!context.selectedTarget || context.selectedTarget.type !== "minion") throw new Error("需要选择一个随从。");
     const expectedSeat = targetKind === "friendly_minion" ? context.sourceOwner : enemy;
     if (context.selectedTarget.seat !== expectedSeat) throw new Error("目标阵营不合法。");
+    if (isUntouchableTarget(game, context.selectedTarget)) throw new Error("这个随从无法成为目标。");
     return [context.selectedTarget];
   }
   return [];
@@ -1447,6 +1468,7 @@ function summon(game: GameState, seat: Seat, cardId: string, amount: number, cat
 
 function dealDamage(game: GameState, target: TargetRef, amount: number, sourceOwner: Seat, catalog: Map<string, CardDefinition>, lifesteal: boolean): void {
   if (amount <= 0) return;
+  if (isUntouchableTarget(game, target)) return;
   const resolved = getTarget(game, target);
   let dealt = amount;
   if (resolved.kind === "hero") {
@@ -1476,6 +1498,7 @@ function dealDamage(game: GameState, target: TargetRef, amount: number, sourceOw
 }
 
 function heal(game: GameState, target: TargetRef, amount: number, catalog: Map<string, CardDefinition>): void {
+  if (isUntouchableTarget(game, target)) return;
   const resolved = getTarget(game, target);
   let restored = 0;
   if (resolved.kind === "hero") {
@@ -1493,6 +1516,7 @@ function heal(game: GameState, target: TargetRef, amount: number, catalog: Map<s
 }
 
 function buff(game: GameState, target: TargetRef, attack: number, health: number, catalog: Map<string, CardDefinition>): void {
+  if (isUntouchableTarget(game, target)) return;
   const resolved = getTarget(game, target);
   if (resolved.kind !== "minion") throw new Error("只能强化随从。");
   resolved.minion.attack += attack;
@@ -1502,6 +1526,7 @@ function buff(game: GameState, target: TargetRef, attack: number, health: number
 }
 
 function destroy(game: GameState, target: TargetRef, catalog: Map<string, CardDefinition>): void {
+  if (isUntouchableTarget(game, target)) return;
   const resolved = getTarget(game, target);
   if (resolved.kind === "hero") {
     resolved.hero.health = 0;
@@ -1512,6 +1537,7 @@ function destroy(game: GameState, target: TargetRef, catalog: Map<string, CardDe
 }
 
 function silence(game: GameState, target: TargetRef, catalog: Map<string, CardDefinition>): void {
+  if (isUntouchableTarget(game, target)) return;
   const resolved = getTarget(game, target);
   if (resolved.kind !== "minion") throw new Error("只能沉默随从。");
   const card = getCard(catalog, resolved.minion.cardId);
@@ -1548,7 +1574,7 @@ function cleanupDeaths(game: GameState, catalog: Map<string, CardDefinition>): v
 
 function enforceTaunt(game: GameState, attackerSeat: Seat, target: TargetRef): void {
   const defender = game.players[other(attackerSeat)];
-  const hasTaunt = defender.board.some((minion) => minion.keywords.includes("taunt"));
+  const hasTaunt = defender.board.some((minion) => minion.keywords.includes("taunt") && !minion.untouchable);
   if (!hasTaunt) return;
   if (target.type !== "minion") throw new Error("必须优先攻击具有嘲讽的随从。");
   const minion = findMinion(game, target);
@@ -1581,6 +1607,7 @@ function checkGameOver(game: GameState): void {
 function createBoardMinion(instance: CardInstance, card: CardDefinition, turn: number): BoardMinion {
   const attack = instance.attackOverride ?? card.attack ?? 0;
   const health = instance.healthOverride ?? card.health ?? 1;
+  const isPureNest = hasRule(card, "dragon_pure_nest");
   return {
     ...instance,
     attack,
@@ -1592,7 +1619,8 @@ function createBoardMinion(instance: CardInstance, card: CardDefinition, turn: n
     attacksThisTurn: 0,
     silenced: false,
     temporaryAttack: 0,
-    cannotAttack: hasRule(card, "ragnaros")
+    cannotAttack: hasRule(card, "ragnaros") || isPureNest,
+    untouchable: isPureNest
   };
 }
 
@@ -1627,6 +1655,14 @@ function findMinion(game: GameState, target: TargetRef): BoardMinion | undefined
   return game.players[target.seat].board.find((minion) => minion.instanceId === target.instanceId);
 }
 
+function isUntouchableTarget(game: GameState, target: TargetRef): boolean {
+  return target.type === "minion" && Boolean(findMinion(game, target)?.untouchable);
+}
+
+function touchableMinionTargets(minions: BoardMinion[], seat: Seat): TargetRef[] {
+  return minions.filter((minion) => !minion.untouchable).map((minion) => ({ type: "minion" as const, seat, instanceId: minion.instanceId }));
+}
+
 function getTarget(game: GameState, target: TargetRef): { kind: "hero"; hero: PlayerGameState["hero"] } | { kind: "minion"; minion: BoardMinion } {
   if (target.type === "hero") return { kind: "hero", hero: game.players[target.seat].hero };
   const minion = findMinion(game, target);
@@ -1658,9 +1694,12 @@ function cardPlayCost(game: GameState, seat: Seat, instance: CardInstance, card:
   const tax = card.type === "spell" && game.players[seat].spellCostIncrease?.throughTurn === game.turn
     ? game.players[seat].spellCostIncrease?.amount ?? 0
     : 0;
-  const baseCost = card.type === "minion" && game.players[seat].board.some((minion) => !minion.silenced && hasRule(getCard(catalog, minion.cardId), "dragon_aviana"))
+  const player = game.players[seat];
+  const baseCost = player.avianaActive
     ? 1
-    : instance.costOverride ?? card.cost;
+    : card.type === "minion" && player.board.some((minion) => !minion.silenced && hasRule(getCard(catalog, minion.cardId), "dragon_aviana"))
+      ? 1
+      : instance.costOverride ?? card.cost;
   const cost = baseCost + tax;
   return opponentHasRuleOnBoard(game, seat, "razorscale", catalog) ? Math.max(cost, 2) : cost;
 }

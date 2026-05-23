@@ -96,6 +96,59 @@ describe("game engine", () => {
     ).toThrow("嘲讽");
   });
 
+  it("allows rush minions to attack minions but not heroes on the summoned turn", () => {
+    const game = createGame("RUSH", [
+      { nickname: "A", class: "warden", deck: deck("A", "warden", Array(30).fill("neutral_squire")) },
+      { nickname: "B", class: "arcanist", deck: deck("B", "arcanist", Array(30).fill("neutral_squire")) }
+    ], sampleCards, 10);
+    game.phase = "playing";
+    game.turn = 3;
+    game.currentPlayer = 0;
+    game.players[0].mana = 3;
+    game.players[0].hand = [{ instanceId: "runner", cardId: "neutral_runner", owner: 0, origin: "starting_deck" }];
+    game.players[1].board.push({
+      instanceId: "target",
+      cardId: "neutral_squire",
+      owner: 1,
+      attack: 1,
+      health: 2,
+      maxHealth: 2,
+      keywords: [],
+      exhausted: false,
+      summonedTurn: 0,
+      attacksThisTurn: 0,
+      silenced: false,
+      temporaryAttack: 0
+    });
+
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "runner" }, sampleCards);
+    const runner = game.players[0].board.find((minion) => minion.cardId === "neutral_runner")!;
+
+    expect(() =>
+      applyGameAction(game, "A", { type: "attack", source: { type: "minion", seat: 0, instanceId: runner.instanceId }, target: { type: "hero", seat: 1 } }, sampleCards)
+    ).toThrow("现在不能攻击");
+    applyGameAction(game, "A", { type: "attack", source: { type: "minion", seat: 0, instanceId: runner.instanceId }, target: { type: "minion", seat: 1, instanceId: "target" } }, sampleCards);
+    expect(runner.attacksThisTurn).toBe(1);
+  });
+
+  it("allows charge minions to attack heroes on the summoned turn", () => {
+    const game = createGame("CHARGE", [
+      { nickname: "A", class: "death_knight", deck: deck("A", "death_knight", Array(30).fill("neutral_squire")) },
+      { nickname: "B", class: "arcanist", deck: deck("B", "arcanist", Array(30).fill("neutral_squire")) }
+    ], sampleCards, 11);
+    game.phase = "playing";
+    game.turn = 3;
+    game.currentPlayer = 0;
+    game.players[0].mana = 2;
+
+    applyGameAction(game, "A", { type: "hero_power" }, sampleCards);
+    const ghoul = game.players[0].board.find((minion) => minion.cardId === "token_ghoul")!;
+    applyGameAction(game, "A", { type: "attack", source: { type: "minion", seat: 0, instanceId: ghoul.instanceId }, target: { type: "hero", seat: 1 } }, sampleCards);
+
+    expect(game.players[1].hero.health).toBe(29);
+    expect(ghoul.attacksThisTurn).toBe(1);
+  });
+
   it("starts Renathal decks at 40 Health and consumes an E.T.C. band choice", () => {
     const renathalDeck = deck("A", "priest", [
       "reno_priest_renathal",
@@ -428,6 +481,63 @@ describe("game engine", () => {
     expect(game.pendingChoice?.options.every((option) => game.players[1].hand.includes(option))).toBe(true);
   });
 
+  it("does not trigger card effects while Theotar swaps chosen hand cards", () => {
+    const game = createGame("THEOTAR", [
+      { nickname: "A", class: "priest", deck: deck("A", "priest", Array(30).fill("neutral_squire")) },
+      { nickname: "B", class: "druid", deck: deck("B", "druid", Array(30).fill("neutral_squire")) }
+    ], sampleCards, 605);
+    game.phase = "playing";
+    game.turn = 5;
+    game.currentPlayer = 0;
+    game.players[0].mana = 6;
+    game.players[0].hand = [
+      { instanceId: "theotar", cardId: "reno_priest_theotar", owner: 0, origin: "starting_deck" },
+      { instanceId: "friendly_blast", cardId: "neutral_blast", owner: 0, origin: "starting_deck" }
+    ];
+    game.players[1].hand = [{ instanceId: "enemy_archer", cardId: "neutral_archer", owner: 1, origin: "starting_deck" }];
+    game.players[0].board.push({
+      instanceId: "friendly_target",
+      cardId: "neutral_squire",
+      owner: 0,
+      attack: 1,
+      health: 2,
+      maxHealth: 2,
+      keywords: [],
+      exhausted: false,
+      summonedTurn: 0,
+      attacksThisTurn: 0,
+      silenced: false,
+      temporaryAttack: 0
+    });
+    game.players[1].board.push({
+      instanceId: "enemy_target",
+      cardId: "neutral_squire",
+      owner: 1,
+      attack: 1,
+      health: 2,
+      maxHealth: 2,
+      keywords: [],
+      exhausted: false,
+      summonedTurn: 0,
+      attacksThisTurn: 0,
+      silenced: false,
+      temporaryAttack: 0
+    });
+
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "theotar" }, sampleCards);
+    const firstChoice = game.pendingChoice!;
+    applyGameAction(game, "A", { type: "choose", choiceId: firstChoice.id, optionInstanceId: "friendly_blast", target: { type: "minion", seat: 1, instanceId: "enemy_target" } }, sampleCards);
+    const secondChoice = game.pendingChoice!;
+    applyGameAction(game, "A", { type: "choose", choiceId: secondChoice.id, optionInstanceId: "enemy_archer", target: { type: "minion", seat: 0, instanceId: "friendly_target" } }, sampleCards);
+
+    expect(game.players[0].hand.map((card) => card.cardId)).toEqual(["neutral_archer"]);
+    expect(game.players[1].hand.map((card) => card.cardId)).toEqual(["neutral_blast"]);
+    expect(game.players[0].board.find((minion) => minion.instanceId === "friendly_target")?.health).toBe(2);
+    expect(game.players[1].board.find((minion) => minion.instanceId === "enemy_target")?.health).toBe(2);
+    expect(game.players[0].graveyard).not.toContain("neutral_blast");
+    expect(game.players[1].board.map((minion) => minion.cardId)).not.toContain("neutral_archer");
+  });
+
   it("expires quickdraw effects after the turn a card is drawn", () => {
     const quickdrawArmor: CardDefinition = {
       id: "test_quickdraw_armor",
@@ -542,5 +652,53 @@ describe("game engine", () => {
     applyGameAction(game, "B", { type: "play_card", handInstanceId: "coin" }, sampleCards);
     expect(game.players[1].mana).toBe(0);
     expect(game.players[1].graveyard).toContain("coin");
+  });
+
+  it("delays Aviana, Elune's Chosen until three friendly turns pass", () => {
+    const game = createGame("AVIANACHOSEN", [
+      { nickname: "A", class: "priest", deck: deck("A", "priest", Array(30).fill("neutral_squire")) },
+      { nickname: "B", class: "druid", deck: deck("B", "druid", Array(30).fill("neutral_squire")) }
+    ], sampleCards, 64);
+    game.phase = "playing";
+    game.turn = 4;
+    game.currentPlayer = 0;
+    game.players[0].mana = 9;
+    game.players[0].hand = [
+      { instanceId: "aviana", cardId: "reno_priest_aviana", owner: 0, origin: "starting_deck" },
+      { instanceId: "spell_before", cardId: "neutral_insight", owner: 0, origin: "starting_deck" }
+    ];
+    game.players[1].hand = [{ instanceId: "enemy_colossus", cardId: "neutral_colossus", owner: 1, origin: "starting_deck" }];
+
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "aviana" }, sampleCards);
+
+    expect(game.players[0]).toMatchObject({ avianaCountdown: 3, avianaActive: false });
+    expect(game.players[0].hand.find((card) => card.instanceId === "spell_before")?.costOverride).toBeUndefined();
+    expect(game.players[1].hand[0].costOverride).toBeUndefined();
+
+    for (let cycle = 0; cycle < 2; cycle += 1) {
+      applyGameAction(game, "A", { type: "end_turn" }, sampleCards);
+      applyGameAction(game, "B", { type: "end_turn" }, sampleCards);
+    }
+    expect(game.players[0]).toMatchObject({ avianaCountdown: 1, avianaActive: false });
+    game.players[0].mana = 1;
+    expect(() => applyGameAction(game, "A", { type: "play_card", handInstanceId: "spell_before" }, sampleCards)).toThrow("法力不足");
+
+    applyGameAction(game, "A", { type: "end_turn" }, sampleCards);
+    applyGameAction(game, "B", { type: "end_turn" }, sampleCards);
+    expect(game.players[0].avianaCountdown).toBeUndefined();
+    expect(game.players[0].avianaActive).toBe(true);
+
+    game.players[0].mana = 1;
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "spell_before" }, sampleCards);
+    expect(game.players[0].mana).toBe(0);
+
+    game.players[0].mana = 1;
+    game.players[0].hand.push({ instanceId: "friendly_colossus", cardId: "neutral_colossus", owner: 0, origin: "starting_deck" });
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "friendly_colossus" }, sampleCards);
+    expect(game.players[0].mana).toBe(0);
+
+    game.currentPlayer = 1;
+    game.players[1].mana = 1;
+    expect(() => applyGameAction(game, "B", { type: "play_card", handInstanceId: "enemy_colossus" }, sampleCards)).toThrow("法力不足");
   });
 });

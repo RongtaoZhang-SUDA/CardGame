@@ -57,7 +57,7 @@ export const renathalPriestCards: CardDefinition[] = [
   card({ id: "reno_priest_spawn_of_shadows", name: "暗影子嗣", class: "priest", type: "minion", rarity: "epic", cost: 5, attack: 5, health: 5, text: "战吼：对双方英雄造成 4 点伤害。在场时，你使用英雄技能后再次如此。", keywords: ["battlecry"], rules: ["priest_spawn_of_shadows"] }),
   card({ id: "reno_priest_theotar", name: "疯狂公爵西塔尔", class: "neutral", type: "minion", rarity: "legendary", cost: 6, attack: 4, health: 4, text: "战吼：从双方手牌各选择一张牌并交换。", keywords: ["battlecry"], rules: ["theotar"] }),
   card({ id: "reno_priest_shadowreaper", name: "暗影收割者安度因", class: "priest", type: "spell", rarity: "legendary", cost: 8, text: "消灭所有攻击力大于或等于 5 的敌方随从。将你的英雄技能替换为虚空形态。", rules: ["priest_shadowreaper"] }),
-  card({ id: "reno_priest_aviana", name: "艾维娜，艾露恩钦选者", class: "neutral", type: "minion", rarity: "legendary", cost: 9, attack: 5, health: 5, text: "战吼：将双方当前手牌的消耗变为 (1) 点。", keywords: ["battlecry"], rules: ["priest_aviana"] }),
+  card({ id: "reno_priest_aviana", name: "艾维娜，艾露恩钦选者", class: "neutral", type: "minion", rarity: "legendary", cost: 9, attack: 5, health: 5, text: "战吼：在3个回合后，在本局对战中，你的卡牌的法力值消耗为（1）点。", keywords: ["battlecry"], rules: ["priest_aviana"] }),
   card({ id: "reno_band_rustrot_viper", name: "锈烂蝰蛇", class: "neutral", type: "minion", rarity: "common", cost: 3, attack: 3, health: 4, text: "战吼：摧毁对手的武器。", keywords: ["battlecry"], rules: ["rustrot_viper"] }),
   card({ id: "reno_band_steamcleaner", name: "蒸汽清洁器", class: "neutral", type: "minion", rarity: "rare", cost: 5, attack: 5, health: 5, text: "战吼：摧毁双方牌库中所有非起始牌。", keywords: ["battlecry"], rules: ["steamcleaner"] }),
 

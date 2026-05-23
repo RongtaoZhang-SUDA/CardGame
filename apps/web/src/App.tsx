@@ -592,7 +592,7 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
                       card={optionCard}
                       className="choice-card"
                       onClick={() => {
-                        if (cardNeedsTarget(optionCard)) {
+                        if (choiceForSelf.kind === "card_choice" && cardNeedsTarget(optionCard)) {
                           setPending({ kind: "choice", choiceId: choiceForSelf.id, optionInstanceId: option.instanceId });
                           setNotice(`已选择 ${optionCard.name}，请点击目标。`);
                         }
@@ -717,8 +717,10 @@ function heroAttackValue(player: PublicGameState["players"][number]): number {
 
 function cardPlayCost(card: CardDefinition, costOverride: number | undefined, player: PublicGameState["players"][number], opponentBoard: PublicGameState["players"][number]["board"], turn: number, cardMap: Map<string, CardDefinition>): number {
   const hasRazorscale = opponentBoard.some((minion) => !minion.silenced && cardMap.get(minion.cardId)?.rules?.includes("razorscale"));
+  const hasAviana = player.board.some((minion) => !minion.silenced && cardMap.get(minion.cardId)?.rules?.includes("dragon_aviana"));
   const spellTax = card.type === "spell" && player.spellCostIncrease?.throughTurn === turn ? player.spellCostIncrease.amount : 0;
-  const cost = (costOverride ?? card.cost) + spellTax;
+  const baseCost = player.avianaActive ? 1 : card.type === "minion" && hasAviana ? 1 : costOverride ?? card.cost;
+  const cost = baseCost + spellTax;
   return hasRazorscale ? Math.max(cost, 2) : cost;
 }
 
@@ -730,12 +732,17 @@ function heroPowerPlayCost(player: PublicGameState["players"][number], card: Car
 
 function minionAttackStatus(minion: PublicGameState["players"][number]["board"][number], turn: number, isTurn: boolean): { ready: boolean; label: string } {
   if (!isTurn) return { ready: false, label: "等待" };
+  if (minion.cannotAttack) return { ready: false, label: "无法攻击" };
   if (minion.attack <= 0) return { ready: false, label: "无法攻击" };
+  if ((minion.frozenUntilTurn ?? -1) >= turn) return { ready: false, label: "冻结" };
   const maxAttacks = minion.keywords.includes("windfury") ? 2 : 1;
   if (minion.attacksThisTurn >= maxAttacks) return { ready: false, label: "已攻击" };
+  if (minion.summonedTurn === turn) {
+    if (minion.keywords.includes("charge")) return { ready: true, label: "可攻击" };
+    if (minion.keywords.includes("rush")) return { ready: true, label: "可突袭" };
+    return { ready: false, label: "下回合" };
+  }
   if (minion.exhausted) return { ready: false, label: "已耗尽" };
-  const canActOnSummon = minion.keywords.includes("charge") || minion.keywords.includes("rush");
-  if (minion.summonedTurn === turn && !canActOnSummon) return { ready: false, label: "下回合" };
   return { ready: true, label: "可攻击" };
 }
 

@@ -137,6 +137,7 @@ function createPlayerState(seat: Seat, input: GamePlayerInput, catalog: Map<stri
     locations: [],
     graveyard: [],
     maxMana: 0,
+    manaCap: GAME_RULES.maxMana,
     mana: 0,
     fatigue: 0,
     mulliganDone: false
@@ -187,10 +188,21 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
   if (card.type === "minion") {
     const minion = createBoardMinion(instance, card, game.turn);
     player.board.push(minion);
+    if (hasRule(card, "dragon_death_beetle") && player.maxMana >= 11) {
+      minion.attack += 4;
+      minion.maxHealth += 4;
+      minion.health += 4;
+      addKeyword(minion, "charge");
+      minion.exhausted = false;
+    }
     addLog(game, `${player.nickname} 召唤了 ${card.name}。`);
-    applyEffects(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "battlecry" }, catalog);
-    applyRuleBattlecry(game, seat, card, target, catalog);
+    const battlecryRepeats = !hasRule(card, "dragon_brann") && player.board.some((boardMinion) => !boardMinion.silenced && hasRule(getCard(catalog, boardMinion.cardId), "dragon_brann")) ? 2 : 1;
+    for (let repeat = 0; repeat < battlecryRepeats; repeat += 1) {
+      applyEffects(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "battlecry" }, catalog);
+      applyRuleBattlecry(game, seat, card, target, catalog);
+    }
     beginCardChoice(game, seat, card, catalog, minion.instanceId);
+    updateFloopCopies(player, card, minion.instanceId);
   } else if (card.type === "spell") {
     addLog(game, `${player.nickname} 使用了 ${card.name}。`);
     applyEffects(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "play" }, catalog);
@@ -215,6 +227,7 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
   if (instance.drawnTurn === game.turn) {
     applyEffects(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "quickdraw" }, catalog);
   }
+  drawMoonlitOriginal(game, seat, instance, catalog);
   cleanupDeaths(game, catalog);
 }
 
@@ -308,6 +321,22 @@ function applyRuleBattlecry(game: GameState, seat: Seat, card: CardDefinition, t
   if (hasRule(card, "priest_loatheb")) taxNextSpells(game, other(seat), 5, card.name);
   if (hasRule(card, "priest_spawn_of_shadows")) damageBothHeroes(game, seat, 4, catalog);
   if (hasRule(card, "priest_aviana")) setHandsToOneMana(game, catalog, card.name);
+  if (hasRule(card, "dragon_astalor")) astalorBloodsworn(game, seat, catalog);
+  if (hasRule(card, "dragon_astalor_protector")) astalorProtector(game, seat, catalog);
+  if (hasRule(card, "dragon_astalor_flamebringer")) dealRandomEnemyDamage(game, seat, player.maxMana >= 10 ? 14 : 7, catalog, card.name);
+  if (hasRule(card, "dragon_splish_splash_whelp") && hasDragonInHand(player, catalog)) gainEmptyMana(game, seat, 1, card.name);
+  if (hasRule(card, "dragon_starfish")) silenceOtherMinions(game, seat, card.id, catalog);
+  if (hasRule(card, "dragon_gem_tosser") && player.mana === 0) dealRandomEnemyDamage(game, seat, player.maxMana, catalog, card.name);
+  if (hasRule(card, "dragon_timeline_accelerator")) drawRaceFromDeck(game, seat, "MECHANICAL", catalog, card.name, -2);
+  if (hasRule(card, "dragon_desert_nestmatron") && hasDragonInHand(player, catalog)) refreshMana(game, seat, 4, card.name);
+  if (hasRule(card, "dragon_elise")) createEliseLandmark(game, seat, catalog, card.name);
+  if (hasRule(card, "dragon_curator")) {
+    drawRaceFromDeck(game, seat, "BEAST", catalog, card.name);
+    drawRaceFromDeck(game, seat, "DRAGON", catalog, card.name);
+    drawRaceFromDeck(game, seat, "MURLOC", catalog, card.name);
+  }
+  if (hasRule(card, "dragon_doomkin")) stealEmptyMana(game, seat, card.name);
+  if (hasRule(card, "dragon_rheastrasza")) summonPureNest(game, seat, catalog, card.name);
 }
 
 function applyRulePlay(game: GameState, seat: Seat, card: CardDefinition, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
@@ -322,8 +351,8 @@ function applyRulePlay(game: GameState, seat: Seat, card: CardDefinition, target
   }
   if (hasRule(card, "force_of_nature")) summonForceTreants(game, seat, catalog);
   if (hasRule(card, "wild_growth")) {
-    if (player.maxMana < GAME_RULES.maxMana) {
-      player.maxMana += 1;
+    if (player.maxMana < (player.manaCap ?? GAME_RULES.maxMana)) {
+      gainEmptyMana(game, seat, 1, card.name);
       addLog(game, `${player.nickname} 获得了一个空的法力水晶。`);
     } else {
       addCardToHand(game, seat, createInstance("roar_excess_mana", seat), catalog, "获得了一张过量法力。");
@@ -338,6 +367,16 @@ function applyRulePlay(game: GameState, seat: Seat, card: CardDefinition, target
     equipRenoBullet(game, seat, catalog);
   }
   if (hasRule(card, "priest_shadowreaper")) becomeShadowreaper(game, seat, catalog, card.name);
+  if (hasRule(card, "dragon_aquatic_form")) aquaticForm(game, seat);
+  if (hasRule(card, "dragon_wave_shaper")) waveShaper(game, seat);
+  if (hasRule(card, "dragon_breath_of_dreams") && hasDragonInHand(player, catalog)) gainEmptyMana(game, seat, 1, card.name);
+  if (hasRule(card, "dragon_moonlit_guidance")) moonlitGuidance(game, seat);
+  if (hasRule(card, "dragon_new_heights")) newHeights(game, seat, card.name);
+  if (hasRule(card, "dragon_poison_seeds")) poisonSeeds(game, catalog);
+  if (hasRule(card, "dragon_psychmelon")) psychmelon(game, seat, catalog, card.name);
+  if (hasRule(card, "dragon_overgrowth")) gainEmptyMana(game, seat, 2, card.name);
+  if (hasRule(card, "dragon_broken_mirror")) brokenMirror(game, seat, target, catalog, card.name);
+  if (hasRule(card, "dragon_guff")) becomeGuff(game, seat, catalog, card.name);
 }
 
 function applyRuleLocation(game: GameState, seat: Seat, card: CardDefinition, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
@@ -360,6 +399,24 @@ function applyChoice(game: GameState, seat: Seat, choiceId: string, optionInstan
   const option = choice.options.find((item) => item.instanceId === optionInstanceId);
   if (!option) throw new Error("选择项不存在。");
 
+  if (choice.kind === "dragon_aquatic_form") {
+    chooseAquaticFormCard(game, seat, option, catalog);
+    delete game.pendingChoice;
+    return;
+  }
+
+  if (choice.kind === "dragon_wave_shaper") {
+    chooseWaveShaperCard(game, seat, option, choice.options, catalog);
+    delete game.pendingChoice;
+    return;
+  }
+
+  if (choice.kind === "dragon_moonlit_guidance") {
+    chooseMoonlitCard(game, seat, option, catalog);
+    delete game.pendingChoice;
+    return;
+  }
+
   if (choice.kind === "etc_band") {
     const player = game.players[seat];
     const sideboardIndex = (player.sideboard ?? []).findIndex((item) => item.instanceId === option.instanceId);
@@ -374,7 +431,7 @@ function applyChoice(game: GameState, seat: Seat, choiceId: string, optionInstan
     const optionCard = getCard(catalog, option.cardId);
     if (cardNeedsTarget(optionCard) && !target) throw new Error("这个抉择效果需要选择目标。");
     applyEffects(game, { sourceCard: optionCard, sourceOwner: seat, selectedTarget: target, trigger: "play" }, catalog);
-    applyRuleChoice(game, seat, optionCard, choice.sourceInstanceId, catalog);
+    applyRuleChoice(game, seat, optionCard, choice.sourceInstanceId, target, catalog);
     addLog(game, `${game.players[seat].nickname} 选择了 ${optionCard.name}。`);
     delete game.pendingChoice;
     cleanupDeaths(game, catalog);
@@ -395,7 +452,7 @@ function applyChoice(game: GameState, seat: Seat, choiceId: string, optionInstan
   }
 
   if (choice.kind === "discover_to_hand") {
-    addCardToHand(game, seat, createInstance(option.cardId, seat), catalog, `选择了 ${getCard(catalog, option.cardId).name}。`);
+    addCardToHand(game, seat, { ...option, owner: seat }, catalog, `选择了 ${getCard(catalog, option.cardId).name}。`);
     delete game.pendingChoice;
     return;
   }
@@ -437,6 +494,294 @@ function addCardToHand(game: GameState, seat: Seat, instance: CardInstance, cata
   addLog(game, `${player.nickname} ${message}`);
 }
 
+function updateFloopCopies(player: PlayerGameState, playedCard: CardDefinition, playedInstanceId: string): void {
+  if (playedCard.type !== "minion" || hasRule(playedCard, "dragon_floop")) return;
+  for (const instance of player.hand) {
+    if (instance.cardId !== "dragon_floop" && !instance.isFloopCopy) continue;
+    if (instance.instanceId === playedInstanceId) continue;
+    instance.cardId = playedCard.id;
+    instance.attackOverride = 3;
+    instance.healthOverride = 4;
+    instance.isFloopCopy = true;
+  }
+}
+
+function drawMoonlitOriginal(game: GameState, seat: Seat, instance: CardInstance, catalog: Map<string, CardDefinition>): void {
+  if (!instance.moonlitOriginalInstanceId || instance.moonlitDrawTurn !== game.turn) return;
+  const player = game.players[seat];
+  const index = player.deck.findIndex((deckCard) => deckCard.instanceId === instance.moonlitOriginalInstanceId);
+  if (index < 0) return;
+  const [original] = player.deck.splice(index, 1);
+  addCardToHand(game, seat, { ...original, drawnTurn: game.turn }, catalog, `抽取了 ${getCard(catalog, original.cardId).name} 的本体。`);
+}
+
+function chooseFromDeck(game: GameState, seat: Seat, kind: "dragon_aquatic_form" | "dragon_wave_shaper" | "dragon_moonlit_guidance", options: CardInstance[], prompt: string): void {
+  if (options.length === 0) {
+    addLog(game, `${game.players[seat].nickname} 的牌库没有可选择的牌。`);
+    return;
+  }
+  beginChoice(game, seat, kind, prompt, options);
+}
+
+function aquaticForm(game: GameState, seat: Seat): void {
+  chooseFromDeck(game, seat, "dragon_aquatic_form", game.players[seat].deck.slice(-3), "从牌库底选择一张牌进行探底。");
+}
+
+function chooseAquaticFormCard(game: GameState, seat: Seat, option: CardInstance, catalog: Map<string, CardDefinition>): void {
+  const player = game.players[seat];
+  const index = player.deck.findIndex((instance) => instance.instanceId === option.instanceId);
+  if (index < 0) return;
+  const [chosen] = player.deck.splice(index, 1);
+  const cost = cardPlayCost(game, seat, chosen, getCard(catalog, chosen.cardId), catalog);
+  if (cost <= player.mana) addCardToHand(game, seat, { ...chosen, drawnTurn: game.turn }, catalog, `用水栖形态抽取了 ${getCard(catalog, chosen.cardId).name}。`);
+  else {
+    player.deck.unshift(chosen);
+    addLog(game, `${getCard(catalog, chosen.cardId).name} 被水栖形态置于牌库顶。`);
+  }
+}
+
+function waveShaper(game: GameState, seat: Seat): void {
+  chooseFromDeck(game, seat, "dragon_wave_shaper", discoverDeckOptions(game, seat, 3), "从牌库中发现一张牌，其余选项置于牌库底。");
+}
+
+function chooseWaveShaperCard(game: GameState, seat: Seat, option: CardInstance, options: CardInstance[], catalog: Map<string, CardDefinition>): void {
+  const player = game.players[seat];
+  const optionIds = new Set(options.map((item) => item.instanceId));
+  const removed = player.deck.filter((instance) => optionIds.has(instance.instanceId));
+  player.deck = player.deck.filter((instance) => !optionIds.has(instance.instanceId));
+  const chosen = removed.find((instance) => instance.instanceId === option.instanceId);
+  if (chosen) addCardToHand(game, seat, { ...chosen, drawnTurn: game.turn }, catalog, `用波涛形塑发现了 ${getCard(catalog, chosen.cardId).name}。`);
+  player.deck.push(...removed.filter((instance) => instance.instanceId !== option.instanceId));
+}
+
+function moonlitGuidance(game: GameState, seat: Seat): void {
+  chooseFromDeck(game, seat, "dragon_moonlit_guidance", discoverDeckOptions(game, seat, 3), "发现牌库中一张牌的复制。");
+}
+
+function chooseMoonlitCard(game: GameState, seat: Seat, option: CardInstance, catalog: Map<string, CardDefinition>): void {
+  const copy = {
+    ...createInstance(option.cardId, seat),
+    moonlitOriginalInstanceId: option.instanceId,
+    moonlitDrawTurn: game.turn
+  };
+  addCardToHand(game, seat, copy, catalog, `用月光指引复制了 ${getCard(catalog, option.cardId).name}。`);
+}
+
+function discoverDeckOptions(game: GameState, seat: Seat, amount: number): CardInstance[] {
+  const pool = [...game.players[seat].deck];
+  const random = rng(game.seed + game.turn * 409 + seat * 79 + pool.length);
+  const picks: CardInstance[] = [];
+  while (pool.length > 0 && picks.length < amount) {
+    const [picked] = pool.splice(Math.floor(random() * pool.length), 1);
+    picks.push(picked);
+  }
+  return picks;
+}
+
+function hasDragonInHand(player: PlayerGameState, catalog: Map<string, CardDefinition>): boolean {
+  return player.hand.some((instance) => hasRace(getCard(catalog, instance.cardId), "DRAGON"));
+}
+
+function hasRace(card: CardDefinition, race: string): boolean {
+  return Boolean(card.races?.includes(race));
+}
+
+function gainEmptyMana(game: GameState, seat: Seat, amount: number, sourceName: string): void {
+  const player = game.players[seat];
+  const before = player.maxMana;
+  player.maxMana = Math.min(player.manaCap ?? GAME_RULES.maxMana, player.maxMana + amount);
+  addLog(game, `${sourceName} 使 ${player.nickname} 获得 ${player.maxMana - before} 个空的法力水晶。`);
+}
+
+function refreshMana(game: GameState, seat: Seat, amount: number, sourceName: string): void {
+  const player = game.players[seat];
+  const before = player.mana;
+  player.mana = Math.min(player.maxMana, player.mana + amount);
+  addLog(game, `${sourceName} 为 ${player.nickname} 复原了 ${player.mana - before} 点法力。`);
+}
+
+function newHeights(game: GameState, seat: Seat, sourceName: string): void {
+  const player = game.players[seat];
+  player.manaCap = Math.min(20, (player.manaCap ?? GAME_RULES.maxMana) + 3);
+  gainEmptyMana(game, seat, 1, sourceName);
+}
+
+function becomeGuff(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  player.manaCap = 20;
+  player.hero.heroPowerCardId = "hero_power_guff_nurture";
+  player.hero.heroPowerCost = 2;
+  gainEmptyMana(game, seat, 1, sourceName);
+  drawCards(game, seat, 1, catalog, true);
+}
+
+function astalorBloodsworn(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
+  addCardToHand(game, seat, createInstance("dragon_astalor_guard", seat), catalog, "获得了护卫阿斯塔洛。");
+  if (game.players[seat].maxMana >= 5) dealRandomEnemyDamage(game, seat, 2, catalog, "阿斯塔洛·血誓");
+}
+
+function astalorProtector(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
+  addCardToHand(game, seat, createInstance("dragon_astalor_flamebringer", seat), catalog, "获得了火焰使者阿斯塔洛。");
+  if (game.players[seat].maxMana >= 8) game.players[seat].hero.armor += 5;
+}
+
+function dealRandomEnemyDamage(game: GameState, seat: Seat, amount: number, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const random = rng(game.seed + game.turn * 421 + amount * 17 + game.players[other(seat)].board.length);
+  for (let count = 0; count < amount; count += 1) {
+    const targets = [
+      { type: "hero" as const, seat: other(seat) },
+      ...game.players[other(seat)].board.map((minion) => ({ type: "minion" as const, seat: other(seat), instanceId: minion.instanceId }))
+    ];
+    if (targets.length === 0) break;
+    dealDamage(game, targets[Math.floor(random() * targets.length)], 1, seat, catalog, false);
+    cleanupDeaths(game, catalog);
+  }
+  addLog(game, `${sourceName} 随机分配了 ${amount} 点伤害。`);
+}
+
+function silenceOtherMinions(game: GameState, seat: Seat, sourceCardId: string, catalog: Map<string, CardDefinition>): void {
+  const source = [...game.players[seat].board].reverse().find((minion) => minion.cardId === sourceCardId);
+  for (const player of game.players) {
+    for (const minion of [...player.board]) {
+      if (minion.instanceId !== source?.instanceId) silence(game, { type: "minion", seat: player.seat, instanceId: minion.instanceId }, catalog);
+    }
+  }
+}
+
+function drawRaceFromDeck(game: GameState, seat: Seat, race: string, catalog: Map<string, CardDefinition>, sourceName: string, discount = 0): void {
+  const player = game.players[seat];
+  const index = player.deck.findIndex((instance) => hasRace(getCard(catalog, instance.cardId), race));
+  if (index < 0) return;
+  const [drawn] = player.deck.splice(index, 1);
+  const baseCost = getCard(catalog, drawn.cardId).cost;
+  addCardToHand(game, seat, { ...drawn, drawnTurn: game.turn, costOverride: discount ? Math.max(0, baseCost + discount) : drawn.costOverride }, catalog, `${sourceName} 抽取了 ${getCard(catalog, drawn.cardId).name}。`);
+}
+
+function psychmelon(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  for (const cost of [7, 8, 9, 10]) drawCostedMinion(game, seat, cost, catalog, sourceName);
+}
+
+function drawCostedMinion(game: GameState, seat: Seat, cost: number, catalog: Map<string, CardDefinition>, sourceName: string): CardInstance | undefined {
+  const player = game.players[seat];
+  const index = player.deck.findIndex((instance) => {
+    const card = getCard(catalog, instance.cardId);
+    return card.type === "minion" && card.cost === cost;
+  });
+  if (index < 0) return undefined;
+  const [drawn] = player.deck.splice(index, 1);
+  addCardToHand(game, seat, { ...drawn, drawnTurn: game.turn }, catalog, `${sourceName} 抽取了 ${getCard(catalog, drawn.cardId).name}。`);
+  return drawn;
+}
+
+function poisonSeeds(game: GameState, catalog: Map<string, CardDefinition>): void {
+  const counts = game.players.map((player) => player.board.length);
+  for (const player of game.players) {
+    for (const minion of [...player.board]) destroy(game, { type: "minion", seat: player.seat, instanceId: minion.instanceId }, catalog);
+  }
+  cleanupDeaths(game, catalog);
+  summon(game, 0, "dragon_token_treant", counts[0], catalog);
+  summon(game, 1, "dragon_token_treant", counts[1], catalog);
+}
+
+function brokenMirror(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion") throw new Error(`${sourceName} 需要选择一个随从。`);
+  const minion = findMinion(game, target);
+  if (!minion) throw new Error("破碎映像的目标已经离开战场。");
+  const cardId = minion.cardId;
+  addCardToHand(game, seat, createInstance(cardId, seat), catalog, `获得了 ${getCard(catalog, cardId).name} 的复制。`);
+  game.players[seat].deck.push(createInstance(cardId, seat));
+  summon(game, seat, cardId, 1, catalog);
+}
+
+function freezeEnemyMinions(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  for (const minion of game.players[other(seat)].board) minion.frozenUntilTurn = game.turn + 1;
+  addLog(game, `${sourceName} 冻结了敌方随从。`);
+}
+
+function recruitEnemyMinion(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion" || target.seat !== other(seat)) throw new Error(`${sourceName} 需要选择一个敌方随从。`);
+  const minion = findMinion(game, target);
+  if (!minion) throw new Error("招募目标已经离开战场。");
+  addCardToHand(game, seat, createInstance(minion.cardId, seat), catalog, `招募了 ${getCard(catalog, minion.cardId).name}。`);
+  for (let count = 0; count < 3; count += 1) addCardToHand(game, other(seat), createInstance("coin", other(seat)), catalog, "获得一张幸运币。");
+}
+
+function bobRefreshTavern(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const options = [...catalog.values()]
+    .filter((card) => card.collectible && card.type === "minion" && card.cost === 3);
+  if (options.length > 0) {
+    const random = rng(game.seed + game.turn * 439 + seat * 89 + options.length);
+    const card = options[Math.floor(random() * options.length)];
+    addCardToHand(game, seat, createInstance(card.id, seat), catalog, `从 ${sourceName} 刷新的酒馆中发现了 ${card.name}。`);
+  }
+  refreshMana(game, seat, 3, sourceName);
+}
+
+function bobFindTriple(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  const index = player.deck.findIndex((instance) => getCard(catalog, instance.cardId).type === "minion");
+  if (index < 0) return;
+  const [drawn] = player.deck.splice(index, 1);
+  addCardToHand(game, seat, { ...drawn, drawnTurn: game.turn }, catalog, `${sourceName} 抽取了 ${getCard(catalog, drawn.cardId).name}。`);
+  addCardToHand(game, seat, createInstance(drawn.cardId, seat), catalog, `获得了 ${getCard(catalog, drawn.cardId).name} 的复制。`);
+  addCardToHand(game, seat, createInstance(drawn.cardId, seat), catalog, `获得了 ${getCard(catalog, drawn.cardId).name} 的复制。`);
+}
+
+function timewindOtherMinions(game: GameState, sourceInstanceId: string | undefined, catalog: Map<string, CardDefinition>, stat: "attack" | "health"): void {
+  for (const player of game.players) {
+    for (const minion of player.board) {
+      if (minion.instanceId === sourceInstanceId) continue;
+      if (stat === "attack") minion.attack = 1;
+      else {
+        minion.maxHealth = 1;
+        minion.health = Math.min(minion.health, 1);
+      }
+    }
+  }
+  addLog(game, `暮光时空撕裂者将其他随从的${stat === "attack" ? "攻击力" : "生命值"}压为1。`);
+}
+
+function drawUntilFull(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
+  while (game.players[seat].hand.length < GAME_RULES.maxHandSize && game.players[seat].deck.length > 0) drawCards(game, seat, 1, catalog, true);
+}
+
+function createEliseLandmark(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const costs = new Set(game.players[seat].deck.map((instance) => getCard(catalog, instance.cardId).cost));
+  if (costs.size < 10) {
+    addLog(game, `${sourceName} 没有找到10种法力值消耗。`);
+    return;
+  }
+  addCardToHand(game, seat, createInstance("dragon_elise_location", seat), catalog, "制造了一个自定义地标。");
+}
+
+function stealEmptyMana(game: GameState, seat: Seat, sourceName: string): void {
+  const enemy = game.players[other(seat)];
+  if (enemy.maxMana <= 0) return;
+  enemy.maxMana -= 1;
+  enemy.mana = Math.min(enemy.mana, enemy.maxMana);
+  gainEmptyMana(game, seat, 1, sourceName);
+}
+
+function summonPureNest(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (hasDuplicateCardIds(game.players[seat].deck)) {
+    addLog(game, `${sourceName} 检查后发现牌库仍有重复牌。`);
+    return;
+  }
+  summon(game, seat, "dragon_pure_nest", 1, catalog);
+}
+
+function discoverDragon(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string, discount: number): void {
+  const pool = [...catalog.values()].filter((card) => card.collectible && card.type === "minion" && hasRace(card, "DRAGON"));
+  if (pool.length === 0) return;
+  const random = rng(game.seed + game.turn * 433 + seat * 83 + pool.length);
+  const picks: CardInstance[] = [];
+  while (pool.length > 0 && picks.length < 3) {
+    const [card] = pool.splice(Math.floor(random() * pool.length), 1);
+    picks.push({ ...createInstance(card.id, seat), costOverride: Math.max(0, card.cost + discount) });
+  }
+  beginChoice(game, seat, "discover_to_hand", `从 ${sourceName} 的龙牌中选择一张。`, picks);
+}
+
 function pullRandomEnemyMinion(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
   const enemy = game.players[other(seat)];
   if (occupiedBoardSlots(enemy) >= GAME_RULES.maxBoardSize) {
@@ -456,7 +801,7 @@ function pullRandomEnemyMinion(game: GameState, seat: Seat, catalog: Map<string,
   addLog(game, `${sourceName} 从 ${enemy.nickname} 的手牌拉出了 ${getCard(catalog, chosen.cardId).name}。`);
 }
 
-function applyRuleChoice(game: GameState, seat: Seat, optionCard: CardDefinition, sourceInstanceId: string | undefined, catalog: Map<string, CardDefinition>): void {
+function applyRuleChoice(game: GameState, seat: Seat, optionCard: CardDefinition, sourceInstanceId: string | undefined, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
   const source = sourceInstanceId ? game.players[seat].board.find((minion) => minion.instanceId === sourceInstanceId) : undefined;
   if (hasRule(optionCard, "druid_claw_charge")) {
     if (!source) throw new Error("利爪德鲁伊已经不在战场。");
@@ -496,6 +841,25 @@ function applyRuleChoice(game: GameState, seat: Seat, optionCard: CardDefinition
     if (!source) throw new Error("剑圣奥卡尼已经不在战场。");
     source.counterNextCardType = hasRule(optionCard, "priest_okani_minion") ? "minion" : "spell";
     addLog(game, `${getCard(catalog, source.cardId).name} 准备反制下一张敌方${source.counterNextCardType === "minion" ? "随从牌" : "法术牌"}。`);
+  }
+  if (hasRule(optionCard, "dragon_guff_ramp")) gainEmptyMana(game, seat, 1, optionCard.name);
+  if (hasRule(optionCard, "dragon_bob_freeze")) freezeEnemyMinions(game, seat, catalog, optionCard.name);
+  if (hasRule(optionCard, "dragon_bob_recruit")) recruitEnemyMinion(game, seat, target, catalog, optionCard.name);
+  if (hasRule(optionCard, "dragon_bob_refresh")) bobRefreshTavern(game, seat, catalog, optionCard.name);
+  if (hasRule(optionCard, "dragon_bob_triple")) bobFindTriple(game, seat, catalog, optionCard.name);
+  if (hasRule(optionCard, "dragon_timewinder_attack")) timewindOtherMinions(game, sourceInstanceId, catalog, "attack");
+  if (hasRule(optionCard, "dragon_timewinder_health")) timewindOtherMinions(game, sourceInstanceId, catalog, "health");
+  if (hasRule(optionCard, "dragon_eonar_draw")) {
+    drawUntilFull(game, seat, catalog);
+    summon(game, seat, "dragon_token_eonar_tree", 1, catalog);
+  }
+  if (hasRule(optionCard, "dragon_eonar_heal")) {
+    heal(game, { type: "hero", seat }, game.players[seat].hero.maxHealth, catalog);
+    summon(game, seat, "dragon_token_eonar_tree", 1, catalog);
+  }
+  if (hasRule(optionCard, "dragon_eonar_refresh")) {
+    refreshMana(game, seat, game.players[seat].maxMana, optionCard.name);
+    summon(game, seat, "dragon_token_eonar_tree", 1, catalog);
   }
 }
 
@@ -862,6 +1226,7 @@ function heroPower(game: GameState, seat: Seat, target: TargetRef | undefined, c
   addLog(game, `${player.nickname} 使用了英雄技能 ${power.name}。`);
   applyEffects(game, { sourceCard: power, sourceOwner: seat, selectedTarget: target, trigger: "hero_power" }, catalog);
   applyRuleHeroPower(game, seat, power, catalog);
+  beginCardChoice(game, seat, power, catalog);
   if (player.board.some((minion) => !minion.silenced && hasRule(getCard(catalog, minion.cardId), "priest_spawn_of_shadows"))) {
     damageBothHeroes(game, seat, 4, catalog);
   }
@@ -917,12 +1282,13 @@ function startTurn(game: GameState, seat: Seat, catalog: Map<string, CardDefinit
   game.currentPlayer = seat;
   game.turn += 1;
   const player = game.players[seat];
-  player.maxMana = Math.min(GAME_RULES.maxMana, player.maxMana + 1);
+  player.maxMana = Math.min(player.manaCap ?? GAME_RULES.maxMana, player.maxMana + 1);
   player.mana = player.maxMana;
   player.hero.heroPowerUsed = false;
   player.hero.attacksThisTurn = 0;
   player.hero.temporaryAttack = 0;
   rollRenoBullet(game, seat, catalog);
+  resolveStartTurnRules(game, seat, catalog);
   for (const minion of player.board) {
     minion.exhausted = false;
     minion.attacksThisTurn = 0;
@@ -935,6 +1301,9 @@ function resolveEndTurnRules(game: GameState, seat: Seat, catalog: Map<string, C
   const player = game.players[seat];
   for (const minion of player.board) {
     const card = getCard(catalog, minion.cardId);
+    if (!minion.silenced && hasRule(card, "dragon_zilliax_haywire")) {
+      dealDamage(game, { type: "hero", seat }, 3, seat, catalog, false);
+    }
     if (!minion.silenced && hasRule(card, "ragnaros")) {
       const enemies = [
         { type: "hero" as const, seat: other(seat) },
@@ -944,6 +1313,16 @@ function resolveEndTurnRules(game: GameState, seat: Seat, catalog: Map<string, C
       const target = enemies[Math.floor(random() * enemies.length)];
       dealDamage(game, target, 8, seat, catalog, false);
       addLog(game, `${card.name} 在回合结束时喷发。`);
+    }
+  }
+}
+
+function resolveStartTurnRules(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
+  if (game.pendingChoice) return;
+  for (const minion of game.players[seat].board) {
+    if (!minion.silenced && hasRule(getCard(catalog, minion.cardId), "dragon_pure_nest")) {
+      discoverDragon(game, seat, catalog, "纯净龙巢", -4);
+      return;
     }
   }
 }
@@ -969,7 +1348,7 @@ function applyEffects(game: GameState, context: EffectContext, catalog: Map<stri
     if (effect.type === "gain_mana") {
       const player = game.players[context.sourceOwner];
       const before = player.mana;
-      player.mana = Math.min(GAME_RULES.maxMana, player.mana + effect.amount);
+      player.mana = Math.min(player.maxMana, player.mana + effect.amount);
       addLog(game, `${player.nickname} 获得了 ${player.mana - before} 点临时法力。`);
       continue;
     }
@@ -1178,6 +1557,7 @@ function enforceTaunt(game: GameState, attackerSeat: Seat, target: TargetRef): v
 
 function canMinionAttack(minion: BoardMinion, target: TargetRef, turn: number): boolean {
   if (minion.cannotAttack) return false;
+  if ((minion.frozenUntilTurn ?? -1) >= turn) return false;
   if (minion.attack <= 0) return false;
   const limit = minion.keywords.includes("windfury") ? 2 : 1;
   if (minion.attacksThisTurn >= limit) return false;
@@ -1278,7 +1658,10 @@ function cardPlayCost(game: GameState, seat: Seat, instance: CardInstance, card:
   const tax = card.type === "spell" && game.players[seat].spellCostIncrease?.throughTurn === game.turn
     ? game.players[seat].spellCostIncrease?.amount ?? 0
     : 0;
-  const cost = (instance.costOverride ?? card.cost) + tax;
+  const baseCost = card.type === "minion" && game.players[seat].board.some((minion) => !minion.silenced && hasRule(getCard(catalog, minion.cardId), "dragon_aviana"))
+    ? 1
+    : instance.costOverride ?? card.cost;
+  const cost = baseCost + tax;
   return opponentHasRuleOnBoard(game, seat, "razorscale", catalog) ? Math.max(cost, 2) : cost;
 }
 

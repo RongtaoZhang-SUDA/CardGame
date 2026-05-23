@@ -1,0 +1,130 @@
+import type { CardDefinition, DeckTemplate, HeroClassProfile } from "@dormstone/shared";
+
+type CardInput = Omit<CardDefinition, "status" | "collectible" | "version" | "updatedAt" | "keywords" | "effects"> &
+  Partial<Pick<CardDefinition, "collectible" | "keywords" | "effects" | "rules" | "sideboardSlots" | "deckRules" | "requiresTarget" | "choiceOptionCardIds">>;
+
+const now = new Date().toISOString();
+
+function card(input: CardInput): CardDefinition {
+  return {
+    ...input,
+    status: "published",
+    collectible: input.collectible ?? true,
+    version: 1,
+    updatedAt: now,
+    keywords: input.keywords ?? [],
+    effects: input.effects ?? []
+  };
+}
+
+export const dragonHighlanderDruidCards: CardDefinition[] = [
+  card({ id: "dragon_aquatic_form", name: "水栖形态", class: "druid", type: "spell", rarity: "common", cost: 0, text: "探底。如果你在本回合中有足够的法力值使用选中的牌，则抽取这张牌。", rules: ["dragon_aquatic_form"] }),
+  card({ id: "dragon_wave_shaper", name: "波涛形塑", class: "druid", type: "spell", rarity: "rare", cost: 1, text: "从你的牌库中发现一张牌。将其余选项置于牌库底。", rules: ["dragon_wave_shaper"] }),
+  card({ id: "dragon_finley", name: "海中向导芬利爵士", class: "neutral", type: "minion", rarity: "legendary", cost: 1, attack: 1, health: 3, races: ["MURLOC"], text: "战吼：将你的手牌和牌库底的牌交换。", keywords: ["battlecry"], rules: ["priest_finley"] }),
+  card({ id: "dragon_breath_of_dreams", name: "梦境吐息", class: "druid", type: "spell", rarity: "rare", cost: 2, text: "抽一张牌。如果你的手牌中有龙牌，便获得一个空的法力水晶。", effects: [{ type: "draw", amount: 1 }], rules: ["dragon_breath_of_dreams"] }),
+  card({ id: "dragon_moonlit_guidance", name: "月光指引", class: "druid", type: "spell", rarity: "rare", cost: 2, text: "发现你牌库中一张牌的复制。如果你在本回合中使用这张复制，则抽取本体。", rules: ["dragon_moonlit_guidance"] }),
+  card({ id: "dragon_inspire", name: "鼓舞", class: "druid", type: "spell", rarity: "rare", cost: 2, text: "抉择：获得一个空的法力水晶；或者抽一张牌。", choiceOptionCardIds: ["dragon_choice_inspire_ramp", "dragon_choice_inspire_draw"] }),
+  card({ id: "dragon_zephrys", name: "了不起的杰弗里斯", class: "neutral", type: "minion", rarity: "legendary", cost: 2, attack: 3, health: 2, races: ["ELEMENTAL"], text: "战吼：如果你的牌库里没有相同的牌，则可以许愿获取一张完美的卡牌。", keywords: ["battlecry"], rules: ["priest_zephrys"] }),
+  card({ id: "dragon_astalor", name: "阿斯塔洛·血誓", class: "neutral", type: "minion", rarity: "legendary", cost: 2, attack: 2, health: 2, text: "战吼：将护卫阿斯塔洛置入你的手牌。法力渴求（5）：造成2点伤害。", keywords: ["battlecry"], rules: ["dragon_astalor"] }),
+  card({ id: "dragon_splish_splash_whelp", name: "戏水雏龙", class: "druid", type: "minion", rarity: "rare", cost: 2, attack: 2, health: 1, races: ["DRAGON"], text: "战吼：如果你的手牌中有龙牌，获得一个空的法力水晶。", keywords: ["battlecry"], rules: ["dragon_splish_splash_whelp"] }),
+  card({ id: "dragon_dirty_rat", name: "卑劣的脏鼠", class: "neutral", type: "minion", rarity: "epic", cost: 2, attack: 2, health: 6, text: "嘲讽。战吼：使你的对手随机从手牌中召唤一个随从。", keywords: ["taunt", "battlecry"], rules: ["dirty_rat"] }),
+  card({ id: "dragon_lotus_seedling", name: "雪莲幼苗", class: "druid", type: "spell", rarity: "rare", cost: 3, text: "抽一张牌。获得5点护甲值。（3回合后长成。）", effects: [{ type: "draw", amount: 1 }, { type: "gain_armor", amount: 5 }], rules: ["dragon_lotus_seedling"] }),
+  card({ id: "dragon_new_heights", name: "攀上新高", class: "druid", type: "spell", rarity: "epic", cost: 3, text: "将你的法力值上限提高3点，获得一个空的法力水晶。", rules: ["dragon_new_heights"] }),
+  card({ id: "dragon_brann", name: "布莱恩·铜须", class: "neutral", type: "minion", rarity: "legendary", cost: 3, attack: 2, health: 4, text: "你的战吼会触发两次。", rules: ["dragon_brann"] }),
+  card({ id: "dragon_starfish", name: "掩息海星", class: "neutral", type: "minion", rarity: "epic", cost: 3, attack: 2, health: 4, races: ["BEAST"], text: "战吼：沉默所有其他随从。", keywords: ["battlecry"], rules: ["dragon_starfish"] }),
+  card({ id: "dragon_renathal", name: "雷纳索尔王子", class: "neutral", type: "minion", rarity: "legendary", cost: 3, attack: 3, health: 4, text: "你的套牌容量和初始生命值为40。", deckRules: { deckSize: 40, startingHealth: 40 } }),
+  card({ id: "dragon_razorscale", name: "锋鳞", class: "neutral", type: "minion", rarity: "epic", cost: 3, attack: 2, health: 4, races: ["DRAGON"], text: "卡牌的法力值消耗不能低于（2）点。", rules: ["razorscale"] }),
+  card({ id: "dragon_gem_tosser", name: "穴居人宝石投掷者", class: "druid", type: "minion", rarity: "common", cost: 3, attack: 3, health: 2, text: "压轴：你每有一个法力水晶，随机对一个敌人造成1点伤害。", keywords: ["battlecry"], rules: ["dragon_gem_tosser"] }),
+  card({ id: "dragon_timeline_accelerator", name: "时间线加速机", class: "neutral", type: "minion", rarity: "common", cost: 3, attack: 2, health: 2, races: ["MECHANICAL"], text: "战吼：抽一张机械牌，并使其法力值消耗减少（2）点。", keywords: ["battlecry"], rules: ["dragon_timeline_accelerator"] }),
+  card({ id: "dragon_poison_seeds", name: "剧毒之种", class: "druid", type: "spell", rarity: "common", cost: 4, text: "消灭所有随从，并召唤等量的2/2树人代替他们。", rules: ["dragon_poison_seeds"] }),
+  card({ id: "dragon_psychmelon", name: "香甜的灵力瓜", class: "druid", type: "spell", rarity: "epic", cost: 4, text: "从你的牌库中抽取法力值消耗为（7），（8），（9）和（10）的随从牌各一张。", rules: ["dragon_psychmelon"] }),
+  card({ id: "dragon_overgrowth", name: "过度生长", class: "druid", type: "spell", rarity: "common", cost: 4, text: "获得两个空的法力水晶。", rules: ["dragon_overgrowth"] }),
+  card({ id: "dragon_floop", name: "软泥教授弗洛普", class: "druid", type: "minion", rarity: "legendary", cost: 4, attack: 3, health: 4, text: "此牌在你的手牌中时，会变成你使用的上一张随从牌的3/4复制。", rules: ["dragon_floop"] }),
+  card({ id: "dragon_etc", name: "乐队经理精英牛头人酋长", class: "neutral", type: "minion", rarity: "legendary", cost: 4, attack: 4, health: 4, text: "在构筑你的套牌时，用3张牌组建一支乐队。战吼：发现其中一张！", keywords: ["battlecry"], sideboardSlots: 3, rules: ["etc_band_manager"] }),
+  card({ id: "dragon_desert_nestmatron", name: "沙漠巢母", class: "druid", type: "minion", rarity: "rare", cost: 4, attack: 3, health: 5, races: ["DRAGON"], text: "嘲讽。战吼：如果你的手牌中有龙牌，复原四个法力水晶。", keywords: ["taunt", "battlecry"], rules: ["dragon_desert_nestmatron"] }),
+  card({ id: "dragon_elise", name: "导航员伊莉斯", class: "neutral", type: "minion", rarity: "legendary", cost: 4, attack: 3, health: 5, text: "战吼：如果你的套牌中的牌有10种不同的法力值消耗，制造一个自定义的地标。", keywords: ["battlecry"], rules: ["dragon_elise"] }),
+  card({ id: "dragon_nourish", name: "滋养", class: "druid", type: "spell", rarity: "rare", cost: 5, text: "抉择：获得两个法力水晶；或者抽三张牌。", choiceOptionCardIds: ["dragon_choice_nourish_ramp", "dragon_choice_nourish_draw"] }),
+  card({ id: "dragon_broken_mirror", name: "破碎映像", class: "priest", type: "spell", rarity: "rare", cost: 5, text: "选择一个随从，将一个它的复制置入你的手牌，牌库和战场。", requiresTarget: true, rules: ["dragon_broken_mirror"] }),
+  card({ id: "dragon_curator", name: "馆长", class: "neutral", type: "minion", rarity: "legendary", cost: 5, attack: 4, health: 6, races: ["MECHANICAL"], text: "嘲讽。战吼：抽取野兽牌，龙牌和鱼人牌各一张。", keywords: ["taunt", "battlecry"], rules: ["dragon_curator"] }),
+  card({ id: "dragon_guff", name: "野性之心古夫", class: "druid", type: "hero", rarity: "legendary", cost: 5, health: 30, text: "战吼：将你的法力值上限变为20。获得一个空的法力水晶。抽一张牌。", rules: ["dragon_guff"] }),
+  card({ id: "dragon_reno_jackson", name: "雷诺·杰克逊", class: "neutral", type: "minion", rarity: "legendary", cost: 6, attack: 4, health: 6, text: "战吼：如果你的牌库里没有相同的牌，则为你的英雄恢复所有生命值。", keywords: ["battlecry"], rules: ["reno_jackson"] }),
+  card({ id: "dragon_theotar", name: "癫狂公爵西塔尔", class: "neutral", type: "minion", rarity: "legendary", cost: 6, attack: 4, health: 4, text: "战吼：从每个玩家的手牌中各发现一张牌并交换。", keywords: ["battlecry"], rules: ["theotar"] }),
+  card({ id: "dragon_death_beetle", name: "死亡甲虫", class: "druid", type: "minion", rarity: "common", cost: 6, attack: 6, health: 6, races: ["UNDEAD", "BEAST"], text: "嘲讽。法力渴求（11）：获得+4/+4和冲锋。", keywords: ["taunt"], rules: ["dragon_death_beetle"] }),
+  card({ id: "dragon_doomkin", name: "末日枭兽", class: "druid", type: "minion", rarity: "rare", cost: 6, attack: 3, health: 4, text: "战吼：夺取你对手的一个空的法力水晶。", keywords: ["battlecry"], rules: ["dragon_doomkin"] }),
+  card({ id: "dragon_bob", name: "调酒师鲍勃", class: "neutral", type: "minion", rarity: "legendary", cost: 6, attack: 4, health: 5, text: "战吼：选择一项酒馆战棋绝技！", keywords: ["battlecry"], choiceOptionCardIds: ["dragon_choice_bob_freeze", "dragon_choice_bob_recruit", "dragon_choice_bob_refresh", "dragon_choice_bob_triple"] }),
+  card({ id: "dragon_timewinder", name: "暮光时空撕裂者", class: "neutral", type: "minion", rarity: "rare", cost: 6, attack: 5, health: 5, races: ["DRAGON"], text: "抉择：将所有其他随从的攻击力变为1；或者生命值变为1。", choiceOptionCardIds: ["dragon_choice_timewinder_attack", "dragon_choice_timewinder_health"] }),
+  card({ id: "dragon_zilliax_perfect_haywire", name: "奇利亚斯豪华版3000型（完美+失控）", class: "neutral", type: "minion", rarity: "legendary", cost: 7, attack: 7, health: 6, races: ["MECHANICAL"], text: "圣盾，嘲讽，吸血，突袭。在你的回合结束时，对你的英雄造成3点伤害。", keywords: ["divine_shield", "taunt", "lifesteal", "rush"], rules: ["dragon_zilliax_haywire"] }),
+  card({ id: "dragon_rheastrasza", name: "瑞亚丝塔萨", class: "druid", type: "minion", rarity: "legendary", cost: 8, attack: 8, health: 8, races: ["DRAGON"], text: "战吼：如果你的套牌里没有相同的牌，则召唤纯净龙巢。", keywords: ["battlecry"], rules: ["dragon_rheastrasza"] }),
+  card({ id: "dragon_lone_ranger_reno", name: "孤胆游侠雷诺", class: "neutral", type: "hero", rarity: "legendary", cost: 8, health: 30, text: "战吼：如果你的套牌里没有相同的牌，将所有敌方随从移出对战。将你的英雄技能替换为随机切换的雷诺手枪。", effects: [{ type: "gain_armor", amount: 5 }], rules: ["priest_lone_ranger_reno"] }),
+  card({ id: "dragon_aviana", name: "艾维娜", class: "druid", type: "minion", rarity: "legendary", cost: 9, attack: 5, health: 5, text: "你的随从牌的法力值消耗为（1）点。", rules: ["dragon_aviana"] }),
+  card({ id: "dragon_eonar", name: "生命的缚誓者艾欧娜尔", class: "druid", type: "minion", rarity: "legendary", cost: 10, attack: 5, health: 7, text: "泰坦。在本随从使用一个技能后，召唤一棵5/5并具有嘲讽的古树。", choiceOptionCardIds: ["dragon_choice_eonar_draw", "dragon_choice_eonar_heal", "dragon_choice_eonar_refresh"] }),
+
+  card({ id: "dragon_astalor_guard", name: "护卫阿斯塔洛", class: "neutral", type: "minion", rarity: "legendary", cost: 5, attack: 5, health: 5, text: "战吼：将火焰使者阿斯塔洛置入你的手牌。法力渴求（8）：获得5点护甲值。", keywords: ["battlecry"], rules: ["dragon_astalor_protector"], collectible: false }),
+  card({ id: "dragon_astalor_flamebringer", name: "火焰使者阿斯塔洛", class: "neutral", type: "minion", rarity: "legendary", cost: 8, attack: 8, health: 8, text: "战吼：造成7点伤害，随机分配到所有敌人身上。法力渴求（10）：改为造成14点。", keywords: ["battlecry"], rules: ["dragon_astalor_flamebringer"], collectible: false }),
+  card({ id: "dragon_choice_inspire_ramp", name: "鼓舞：成长", class: "druid", type: "spell", rarity: "rare", cost: 0, text: "获得一个空的法力水晶。", rules: ["dragon_guff_ramp"], collectible: false }),
+  card({ id: "dragon_choice_inspire_draw", name: "鼓舞：抽牌", class: "druid", type: "spell", rarity: "rare", cost: 0, text: "抽一张牌。", effects: [{ type: "draw", amount: 1 }], collectible: false }),
+  card({ id: "dragon_choice_nourish_ramp", name: "滋养：成长", class: "druid", type: "spell", rarity: "rare", cost: 0, text: "获得两个法力水晶。", rules: ["dragon_overgrowth"], collectible: false }),
+  card({ id: "dragon_choice_nourish_draw", name: "滋养：抽牌", class: "druid", type: "spell", rarity: "rare", cost: 0, text: "抽三张牌。", effects: [{ type: "draw", amount: 3 }], collectible: false }),
+  card({ id: "hero_power_guff_nurture", name: "培育", class: "druid", type: "hero_power", rarity: "legendary", cost: 2, text: "抉择：抽一张牌；或者获得一个空的法力水晶。", choiceOptionCardIds: ["dragon_choice_guff_draw", "dragon_choice_guff_ramp"], collectible: false }),
+  card({ id: "dragon_choice_guff_draw", name: "培育：山谷植根", class: "druid", type: "spell", rarity: "legendary", cost: 0, text: "抽一张牌。", effects: [{ type: "draw", amount: 1 }], collectible: false }),
+  card({ id: "dragon_choice_guff_ramp", name: "培育：冰雪绽放", class: "druid", type: "spell", rarity: "legendary", cost: 0, text: "获得一个空的法力水晶。", rules: ["dragon_guff_ramp"], collectible: false }),
+  card({ id: "dragon_choice_timewinder_attack", name: "暮光时空撕裂者：压低攻击", class: "neutral", type: "spell", rarity: "rare", cost: 0, text: "将所有其他随从的攻击力变为1。", rules: ["dragon_timewinder_attack"], collectible: false }),
+  card({ id: "dragon_choice_timewinder_health", name: "暮光时空撕裂者：压低生命", class: "neutral", type: "spell", rarity: "rare", cost: 0, text: "将所有其他随从的生命值变为1。", rules: ["dragon_timewinder_health"], collectible: false }),
+  card({ id: "dragon_choice_bob_freeze", name: "冻结商店", class: "neutral", type: "spell", rarity: "legendary", cost: 0, text: "冻结所有敌方随从。", rules: ["dragon_bob_freeze"], collectible: false }),
+  card({ id: "dragon_choice_bob_recruit", name: "招募随从", class: "neutral", type: "spell", rarity: "legendary", cost: 0, text: "将一个敌方随从的一张复制置入你的手牌。你的对手获取3张幸运币。", requiresTarget: true, rules: ["dragon_bob_recruit"], collectible: false }),
+  card({ id: "dragon_choice_bob_refresh", name: "刷新酒馆", class: "neutral", type: "spell", rarity: "legendary", cost: 0, text: "发现一张法力值消耗为（3）的随从牌。复原3个法力水晶。", rules: ["dragon_bob_refresh"], collectible: false }),
+  card({ id: "dragon_choice_bob_triple", name: "寻找三连", class: "neutral", type: "spell", rarity: "legendary", cost: 0, text: "抽一张随从牌。获取2张它的复制。", rules: ["dragon_bob_triple"], collectible: false }),
+  card({ id: "dragon_choice_eonar_draw", name: "自行生长", class: "druid", type: "spell", rarity: "legendary", cost: 0, text: "抽牌直到手牌数量达到上限。召唤一棵永恒古树。", rules: ["dragon_eonar_draw"], collectible: false }),
+  card({ id: "dragon_choice_eonar_heal", name: "丰饶收获", class: "druid", type: "spell", rarity: "legendary", cost: 0, text: "为你的英雄恢复所有生命值。召唤一棵永恒古树。", rules: ["dragon_eonar_heal"], collectible: false }),
+  card({ id: "dragon_choice_eonar_refresh", name: "繁茂似锦", class: "druid", type: "spell", rarity: "legendary", cost: 0, text: "复原你的法力水晶。召唤一棵永恒古树。", rules: ["dragon_eonar_refresh"], collectible: false }),
+  card({ id: "dragon_token_eonar_tree", name: "永恒古树", class: "druid", type: "minion", rarity: "legendary", cost: 5, attack: 5, health: 5, text: "嘲讽。", keywords: ["taunt"], collectible: false }),
+  card({ id: "dragon_token_treant", name: "树人", class: "druid", type: "minion", rarity: "common", cost: 2, attack: 2, health: 2, text: "", collectible: false }),
+  card({ id: "dragon_pure_nest", name: "纯净龙巢", class: "druid", type: "minion", rarity: "legendary", cost: 11, attack: 0, health: 1, text: "在你的回合开始时，发现一张龙牌，其法力值消耗减少（4）点。", rules: ["dragon_pure_nest"], collectible: false }),
+  card({ id: "dragon_elise_location", name: "导航员伊莉斯的地标", class: "neutral", type: "location", rarity: "legendary", cost: 1, durability: 2, text: "使用：召唤一只2/1并具有突袭的迅猛龙，获得3点护甲值。", effects: [{ type: "summon", cardId: "dragon_token_elise_raptor", amount: 1, trigger: "location" }, { type: "gain_armor", amount: 3, trigger: "location" }], collectible: false }),
+  card({ id: "dragon_token_elise_raptor", name: "伊莉斯的迅猛龙", class: "neutral", type: "minion", rarity: "common", cost: 2, attack: 2, health: 1, text: "突袭。", keywords: ["rush"], collectible: false }),
+  card({ id: "dragon_sideboard_viper", name: "锈烂蝰蛇", class: "neutral", type: "minion", rarity: "common", cost: 3, attack: 3, health: 4, races: ["BEAST"], text: "战吼：摧毁对手的武器。", keywords: ["battlecry"], rules: ["rustrot_viper"] }),
+  card({ id: "dragon_sideboard_steamcleaner", name: "蒸汽清洁器", class: "neutral", type: "minion", rarity: "rare", cost: 5, attack: 5, health: 5, races: ["MECHANICAL"], text: "战吼：摧毁双方牌库中所有非起始牌。", keywords: ["battlecry"], rules: ["steamcleaner"] })
+];
+
+export const dragonHighlanderDruidDeckCardIds = dragonHighlanderDruidCards.slice(0, 40).map((item) => item.id);
+export const dragonHighlanderDruidSideboardCardIds = ["dragon_sideboard_viper", "dragon_sideboard_steamcleaner", "dragon_broken_mirror"];
+
+const druidHero: HeroClassProfile = {
+  class: "druid",
+  classZh: "德鲁伊",
+  classEn: "Druid",
+  defaultHero: "玛法里奥",
+  heroPowerName: "变形",
+  heroPowerCost: 2,
+  heroPowerText: "本回合获得+1攻击力，并获得1点护甲值。",
+  traits: ["宇宙", "龙", "成长", "40张雷纳索尔构筑"],
+  sourceUrls: []
+};
+
+export const dragonHighlanderDruidTemplate: DeckTemplate = {
+  id: "custom_dragon_highlander_druid",
+  class: "druid",
+  defaultClass: "druid",
+  classZh: "德鲁伊",
+  classEn: "Druid",
+  nameZh: "宇宙龙德",
+  nameEn: "Dragon Highlander Druid",
+  era: "狂野",
+  mode: "狂野",
+  archetype: "宇宙成长龙德",
+  tags: ["宇宙", "雷纳索尔", "龙", "成长", "雷诺"],
+  fame: "A",
+  annoyance: 4,
+  uniqueness: 5,
+  coreCardsZh: ["瑞亚丝塔萨", "野性之心古夫", "攀上新高", "孤胆游侠雷诺", "生命的缚誓者艾欧娜尔"],
+  coreCardsEn: ["Rheastrasza", "Wildheart Guff", "New Heights", "Lone Ranger Reno", "Eonar, the Life-Binder"],
+  winCondition: "用成长和宇宙解牌拖入高费回合，再以龙巢、泰坦和雷诺英雄牌压住场面。",
+  whyIncluded: "按用户提供的宇宙龙德截图接入，并为牌组中的发现、成长、龙牌和高费终结组件补上实际规则。",
+  recommendedUse: "在大厅直接选择这套40张宇宙龙德开始对战。",
+  sourceNote: "主牌表按用户截图整理，卡文与衍生牌效果按当前炉石卡牌数据核对。",
+  sourceUrls: [],
+  hero: druidHero,
+  presetCardIds: dragonHighlanderDruidDeckCardIds,
+  sideboardCardIds: dragonHighlanderDruidSideboardCardIds,
+  expectedDeckSize: 40
+};

@@ -82,7 +82,46 @@ export type CardRuleTag =
   | "priest_aviana"
   | "priest_reno_holy_bullet"
   | "priest_reno_nature_bullet"
-  | "priest_reno_shadow_bullet";
+  | "priest_reno_shadow_bullet"
+  | "dragon_aquatic_form"
+  | "dragon_wave_shaper"
+  | "dragon_breath_of_dreams"
+  | "dragon_moonlit_guidance"
+  | "dragon_astalor"
+  | "dragon_astalor_protector"
+  | "dragon_astalor_flamebringer"
+  | "dragon_splish_splash_whelp"
+  | "dragon_lotus_seedling"
+  | "dragon_new_heights"
+  | "dragon_brann"
+  | "dragon_starfish"
+  | "dragon_gem_tosser"
+  | "dragon_timeline_accelerator"
+  | "dragon_poison_seeds"
+  | "dragon_psychmelon"
+  | "dragon_overgrowth"
+  | "dragon_floop"
+  | "dragon_desert_nestmatron"
+  | "dragon_elise"
+  | "dragon_broken_mirror"
+  | "dragon_curator"
+  | "dragon_guff"
+  | "dragon_guff_ramp"
+  | "dragon_doomkin"
+  | "dragon_death_beetle"
+  | "dragon_bob_recruit"
+  | "dragon_bob_refresh"
+  | "dragon_bob_triple"
+  | "dragon_bob_freeze"
+  | "dragon_timewinder_attack"
+  | "dragon_timewinder_health"
+  | "dragon_zilliax_haywire"
+  | "dragon_rheastrasza"
+  | "dragon_pure_nest"
+  | "dragon_aviana"
+  | "dragon_eonar_draw"
+  | "dragon_eonar_heal"
+  | "dragon_eonar_refresh";
 
 export type TargetKind = "none" | "selected" | "enemy_hero" | "own_hero" | "all_enemies" | "all_enemy_minions" | "all_minions" | "any_minion" | "friendly_minion" | "enemy_minion";
 
@@ -122,6 +161,7 @@ export interface CardDefinition {
   effects: CardEffect[];
   sourceNameEn?: string;
   sourceCardId?: string;
+  races?: string[];
   requiresTarget?: boolean;
   choiceOptionCardIds?: string[];
   deckRules?: {
@@ -211,6 +251,9 @@ export interface CardInstance {
   attackOverride?: number;
   healthOverride?: number;
   remainingUses?: number;
+  moonlitOriginalInstanceId?: string;
+  moonlitDrawTurn?: number;
+  isFloopCopy?: boolean;
 }
 
 export interface BoardMinion extends CardInstance {
@@ -224,6 +267,7 @@ export interface BoardMinion extends CardInstance {
   silenced: boolean;
   temporaryAttack: number;
   cannotAttack?: boolean;
+  frozenUntilTurn?: number;
   expiresAtEndOfTurn?: boolean;
   counterNextCardType?: "minion" | "spell";
   borrowedByInstanceId?: string;
@@ -265,6 +309,7 @@ export interface PlayerGameState {
   locations: BoardLocation[];
   graveyard: string[];
   maxMana: number;
+  manaCap?: number;
   mana: number;
   fatigue: number;
   mulliganDone: boolean;
@@ -300,7 +345,16 @@ export interface GameLogEntry {
 
 export type GamePhase = "mulligan" | "playing" | "finished";
 
-export type PendingChoiceKind = "etc_band" | "theotar_friendly" | "theotar_enemy" | "copy_enemy_hand" | "discover_to_hand" | "card_choice";
+export type PendingChoiceKind =
+  | "etc_band"
+  | "theotar_friendly"
+  | "theotar_enemy"
+  | "copy_enemy_hand"
+  | "discover_to_hand"
+  | "card_choice"
+  | "dragon_aquatic_form"
+  | "dragon_wave_shaper"
+  | "dragon_moonlit_guidance";
 
 export interface PendingChoice {
   id: string;

@@ -1,5 +1,6 @@
 import type { CardDefinition } from "@dormstone/shared";
 import { csvCoreCards } from "./csvCoreCards.js";
+import { dragonHighlanderDruidCards } from "./dragonHighlanderDruid.js";
 import { forceRoarDruidCards } from "./forceRoarDruid.js";
 import { renathalPriestCards } from "./renathalPriest.js";
 
@@ -22,6 +23,7 @@ function card(input: CardInput): CardDefinition {
 
 export const sampleCards: CardDefinition[] = [
   ...csvCoreCards,
+  ...dragonHighlanderDruidCards,
   ...forceRoarDruidCards,
   ...renathalPriestCards,
   card({ id: "coin", name: "先手机巧", class: "neutral", type: "spell", rarity: "common", cost: 0, text: "在本回合获得 1 点法力。", effects: [{ type: "gain_mana", amount: 1 }], collectible: false }),

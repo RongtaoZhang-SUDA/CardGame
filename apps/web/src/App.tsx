@@ -719,7 +719,8 @@ function cardPlayCost(card: CardDefinition, costOverride: number | undefined, pl
   const hasRazorscale = opponentBoard.some((minion) => !minion.silenced && cardMap.get(minion.cardId)?.rules?.includes("razorscale"));
   const hasAviana = player.board.some((minion) => !minion.silenced && cardMap.get(minion.cardId)?.rules?.includes("dragon_aviana"));
   const spellTax = card.type === "spell" && player.spellCostIncrease?.throughTurn === turn ? player.spellCostIncrease.amount : 0;
-  const baseCost = player.avianaActive ? 1 : card.type === "minion" && hasAviana ? 1 : costOverride ?? card.cost;
+  const printedOrOverriddenCost = costOverride ?? card.cost;
+  const baseCost = player.avianaActive ? Math.min(printedOrOverriddenCost, 1) : card.type === "minion" && hasAviana ? 1 : printedOrOverriddenCost;
   const cost = baseCost + spellTax;
   return hasRazorscale ? Math.max(cost, 2) : cost;
 }

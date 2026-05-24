@@ -264,7 +264,7 @@ function applyRuleBattlecry(game: GameState, seat: Seat, card: CardDefinition, t
     if (player.hand.length === 0 || enemy.hand.length === 0) {
       addLog(game, `${card.name} 没有交换牌的目标。`);
     } else {
-      beginChoice(game, seat, "theotar_friendly", "先选择一张你要交给对手的手牌。", player.hand);
+      beginChoice(game, seat, "theotar_friendly", "先从三张你的手牌中选择一张交给对手。", discoverHandOptions(game, seat, player.hand, "theotar_friendly"));
     }
   }
   if (hasRule(card, "rustrot_viper")) {
@@ -329,6 +329,16 @@ function applyRuleBattlecry(game: GameState, seat: Seat, card: CardDefinition, t
   if (hasRule(card, "dragon_gem_tosser") && player.mana === 0) dealRandomEnemyDamage(game, seat, player.maxMana, catalog, card.name);
   if (hasRule(card, "dragon_timeline_accelerator")) drawRaceFromDeck(game, seat, "MECHANICAL", catalog, card.name, -2);
   if (hasRule(card, "dragon_desert_nestmatron") && hasDragonInHand(player, catalog)) refreshMana(game, seat, 4, card.name);
+  if (hasRule(card, "dragon_prickly_drake")) pricklyDrake(game, seat, target, catalog, card.name);
+  if (hasRule(card, "dragon_twilight_guardian")) twilightGuardian(game, seat, card.id, catalog, card.name);
+  if (hasRule(card, "dragon_twilight_drake")) twilightDrake(game, seat, card.id, catalog, card.name);
+  if (hasRule(card, "dragon_onyxian_warder")) onyxianWarder(game, seat, catalog, card.name);
+  if (hasRule(card, "dragon_emerald_explorer")) discoverDragon(game, seat, catalog, card.name, 0);
+  if (hasRule(card, "dragon_dragon_golem")) dragonGolem(game, seat, card.id, catalog, card.name);
+  if (hasRule(card, "dragon_primordial_drake")) primordialDrake(game, seat, card.id, catalog, card.name);
+  if (hasRule(card, "dragon_alexstrasza_lifebinder")) alexstraszaLifebinder(game, seat, target, catalog, card.name);
+  if (hasRule(card, "dragon_deathwing")) deathwingBattlecry(game, seat, card.id, catalog, card.name);
+  if (hasRule(card, "dragon_raid_boss_onyxia")) summonOnyxianWhelps(game, seat, 6, catalog, card.name);
   if (hasRule(card, "dragon_elise")) createEliseLandmark(game, seat, catalog, card.name);
   if (hasRule(card, "dragon_curator")) {
     drawRaceFromDeck(game, seat, "BEAST", catalog, card.name);
@@ -439,7 +449,8 @@ function applyChoice(game: GameState, seat: Seat, choiceId: string, optionInstan
   }
 
   if (choice.kind === "theotar_friendly") {
-    beginChoice(game, seat, "theotar_enemy", "再选择一张要从对手手牌换来的牌。", game.players[other(seat)].hand, option.instanceId);
+    const enemySeat = other(seat);
+    beginChoice(game, seat, "theotar_enemy", "再从三张对手手牌中选择一张换来。", discoverHandOptions(game, seat, game.players[enemySeat].hand, "theotar_enemy"), option.instanceId);
     return;
   }
 
@@ -481,6 +492,18 @@ function beginChoice(game: GameState, seat: Seat, kind: NonNullable<GameState["p
     chosenFriendlyInstanceId,
     sourceInstanceId
   };
+}
+
+function discoverHandOptions(game: GameState, seat: Seat, hand: CardInstance[], salt: string): CardInstance[] {
+  const random = rng(game.seed + game.turn * 257 + seat * 41 + hand.length * 13 + salt.length);
+  const pool = [...hand];
+  const options: CardInstance[] = [];
+  while (pool.length > 0 && options.length < 3) {
+    const index = Math.floor(random() * pool.length);
+    const [picked] = pool.splice(index, 1);
+    options.push(picked);
+  }
+  return options;
 }
 
 function addCardToHand(game: GameState, seat: Seat, instance: CardInstance, catalog: Map<string, CardDefinition>, message: string): void {
@@ -771,8 +794,7 @@ function summonPureNest(game: GameState, seat: Seat, catalog: Map<string, CardDe
 }
 
 function discoverDragon(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string, discount: number, excludedCardIds: string[] = []): void {
-  const excluded = new Set(excludedCardIds);
-  const pool = [...catalog.values()].filter((card) => card.collectible && card.type === "minion" && hasRace(card, "DRAGON") && !excluded.has(card.id));
+  const pool = dragonDiscoverPool(game, seat, catalog, excludedCardIds);
   if (pool.length === 0) return;
   const random = rng(game.seed + game.turn * 433 + seat * 83 + pool.length);
   const picks: CardInstance[] = [];
@@ -781,6 +803,111 @@ function discoverDragon(game: GameState, seat: Seat, catalog: Map<string, CardDe
     picks.push({ ...createInstance(card.id, seat), costOverride: Math.max(0, card.cost + discount) });
   }
   beginChoice(game, seat, "discover_to_hand", `从 ${sourceName} 的龙牌中选择一张。`, picks);
+}
+
+function dragonDiscoverPool(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, excludedCardIds: string[] = []): CardDefinition[] {
+  const excluded = new Set(excludedCardIds);
+  const playerClass = game.players[seat].class;
+  return [...catalog.values()].filter((card) =>
+    card.collectible &&
+    card.type === "minion" &&
+    hasRace(card, "DRAGON") &&
+    (card.class === playerClass || card.class === "neutral") &&
+    !excluded.has(card.id)
+  );
+}
+
+function addRandomDragonToHand(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string, discount = 0, excludedCardIds: string[] = []): void {
+  const pool = dragonDiscoverPool(game, seat, catalog, excludedCardIds);
+  if (pool.length === 0) {
+    addLog(game, `${sourceName} 没有可获取的龙牌。`);
+    return;
+  }
+  const random = rng(game.seed + game.turn * 461 + seat * 97 + pool.length + game.logs.length);
+  const picked = pool[Math.floor(random() * pool.length)];
+  addCardToHand(game, seat, { ...createInstance(picked.id, seat), costOverride: Math.max(0, picked.cost + discount) }, catalog, `${sourceName} 获得了 ${picked.name}。`);
+}
+
+function sourceMinion(game: GameState, seat: Seat, cardId: string): BoardMinion | undefined {
+  for (let index = game.players[seat].board.length - 1; index >= 0; index -= 1) {
+    const minion = game.players[seat].board[index];
+    if (minion.cardId === cardId) return minion;
+  }
+  return undefined;
+}
+
+function pricklyDrake(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!hasDragonInHand(game.players[seat], catalog)) {
+    addLog(game, `${sourceName} 手牌中没有龙牌，没有造成伤害。`);
+    return;
+  }
+  if (!target || target.type !== "minion" || target.seat !== other(seat)) throw new Error("需要选择一个敌方随从。");
+  dealDamage(game, target, 5, seat, catalog, false);
+}
+
+function twilightGuardian(game: GameState, seat: Seat, cardId: string, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!hasDragonInHand(game.players[seat], catalog)) return;
+  const minion = sourceMinion(game, seat, cardId);
+  if (!minion) return;
+  minion.attack += 1;
+  addKeyword(minion, "taunt");
+  addLog(game, `${sourceName} 获得 +1 攻击力和嘲讽。`);
+}
+
+function twilightDrake(game: GameState, seat: Seat, cardId: string, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const minion = sourceMinion(game, seat, cardId);
+  if (!minion) return;
+  const bonus = game.players[seat].hand.length;
+  minion.maxHealth += bonus;
+  minion.health += bonus;
+  addLog(game, `${sourceName} 获得 +${bonus} 生命值。`);
+}
+
+function onyxianWarder(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!hasDragonInHand(game.players[seat], catalog)) return;
+  summonOnyxianWhelps(game, seat, 2, catalog, sourceName);
+}
+
+function summonOnyxianWhelps(game: GameState, seat: Seat, amount: number, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const before = game.players[seat].board.length;
+  summon(game, seat, "dragon_token_onyxian_whelp", amount, catalog);
+  const summoned = game.players[seat].board.length - before;
+  if (summoned > 0) addLog(game, `${sourceName} 召唤了 ${summoned} 条奥妮克希亚雏龙。`);
+}
+
+function dragonGolem(game: GameState, seat: Seat, cardId: string, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const amount = game.players[seat].hand.filter((instance) => hasRace(getCard(catalog, instance.cardId), "DRAGON")).length;
+  if (amount <= 0) return;
+  summon(game, seat, cardId, amount, catalog);
+  addLog(game, `${sourceName} 根据手牌中的龙牌复制了自己。`);
+}
+
+function primordialDrake(game: GameState, seat: Seat, cardId: string, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const source = sourceMinion(game, seat, cardId);
+  const targets = game.players.flatMap((player) => player.board
+    .filter((minion) => minion.instanceId !== source?.instanceId)
+    .map((minion) => ({ type: "minion" as const, seat: player.seat, instanceId: minion.instanceId })));
+  for (const target of targets) dealDamage(game, target, 2, seat, catalog, false);
+  addLog(game, `${sourceName} 对所有其他随从造成了2点伤害。`);
+}
+
+function alexstraszaLifebinder(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target) throw new Error("需要选择一个角色。");
+  if (target.seat === seat) heal(game, target, 8, catalog);
+  else dealDamage(game, target, 8, seat, catalog, false);
+  addLog(game, `${sourceName} 的战吼已经生效。`);
+}
+
+function deathwingBattlecry(game: GameState, seat: Seat, cardId: string, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const source = sourceMinion(game, seat, cardId);
+  for (const player of game.players) {
+    for (const minion of player.board) {
+      if (minion.instanceId !== source?.instanceId) minion.health = 0;
+    }
+  }
+  const discarded = game.players[seat].hand.splice(0);
+  game.players[seat].graveyard.push(...discarded.map((instance) => instance.cardId));
+  addLog(game, `${sourceName} 消灭了所有其他随从，并弃掉了 ${discarded.length} 张手牌。`);
 }
 
 function pullRandomEnemyMinion(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
@@ -1008,15 +1135,22 @@ function stealSerenaStats(game: GameState, seat: Seat, target: TargetRef | undef
   const victim = findMinion(game, target);
   const serena = [...game.players[seat].board].reverse().find((minion) => minion.cardId === "reno_priest_serena");
   if (!victim || !serena) throw new Error(`${sourceName} 没有可偷取的属性。`);
-  const attack = Math.max(0, victim.attack - 1);
-  const health = Math.max(0, victim.health - 1);
-  victim.attack -= attack;
-  victim.maxHealth = Math.max(1, victim.maxHealth - health);
-  victim.health = Math.max(1, victim.health - health);
-  serena.attack += attack;
-  serena.maxHealth += health;
-  serena.health += health;
-  addLog(game, `${sourceName} 从 ${targetName(game, target, catalog)} 偷取了 ${attack}/${health}。`);
+  let stolenAttack = 0;
+  while (victim.attack > 0 && serena.attack <= victim.attack) {
+    victim.attack -= 1;
+    serena.attack += 1;
+    stolenAttack += 1;
+  }
+
+  let stolenHealth = 0;
+  while (victim.health > 0 && serena.health <= victim.health) {
+    victim.health -= 1;
+    victim.maxHealth = Math.max(0, victim.maxHealth - 1);
+    serena.health += 1;
+    serena.maxHealth += 1;
+    stolenHealth += 1;
+  }
+  addLog(game, `${sourceName} 从 ${targetName(game, target, catalog)} 偷取了 ${stolenAttack}/${stolenHealth}。`);
 }
 
 function taxNextSpells(game: GameState, seat: Seat, amount: number, sourceName: string): void {
@@ -1366,7 +1500,7 @@ function applyEffects(game: GameState, context: EffectContext, catalog: Map<stri
     if (effect.type === "gain_mana") {
       const player = game.players[context.sourceOwner];
       const before = player.mana;
-      player.mana = Math.min(player.maxMana, player.mana + effect.amount);
+      player.mana += effect.amount;
       addLog(game, `${player.nickname} 获得了 ${player.mana - before} 点临时法力。`);
       continue;
     }
@@ -1566,6 +1700,8 @@ function cleanupDeaths(game: GameState, catalog: Map<string, CardDefinition>): v
         addLog(game, `${card.name} 被消灭。`);
         if (!minion.silenced && hasRule(card, "priest_najark")) returnBorrowedMinions(game, minion.instanceId, catalog);
         if (!minion.silenced) applyEffects(game, { sourceCard: card, sourceOwner: player.seat, trigger: "deathrattle" }, catalog);
+        if (!minion.silenced && hasRule(card, "dragon_seeded_green_drake")) addRandomDragonToHand(game, player.seat, catalog, card.name, -2);
+        if (!minion.silenced && hasRule(card, "dragon_bone_drake")) addRandomDragonToHand(game, player.seat, catalog, card.name);
       }
       changed = true;
     }
@@ -1683,7 +1819,10 @@ function keywordOnSource(game: GameState, context: EffectContext, keyword: Keywo
 
 function spellDamageBonus(game: GameState, context: EffectContext): number {
   if (context.sourceCard.type !== "spell") return 0;
-  return game.players[context.sourceOwner].board.filter((minion) => minion.keywords.includes("spell_damage")).length;
+  return game.players[context.sourceOwner].board.reduce((total, minion) => {
+    if (!minion.keywords.includes("spell_damage")) return total;
+    return total + (minion.cardId === "dragon_malygos" ? 5 : 1);
+  }, 0);
 }
 
 function hasRule(card: CardDefinition, rule: NonNullable<CardDefinition["rules"]>[number]): boolean {
@@ -1695,11 +1834,12 @@ function cardPlayCost(game: GameState, seat: Seat, instance: CardInstance, card:
     ? game.players[seat].spellCostIncrease?.amount ?? 0
     : 0;
   const player = game.players[seat];
+  const printedOrOverriddenCost = instance.costOverride ?? card.cost;
   const baseCost = player.avianaActive
-    ? 1
+    ? Math.min(printedOrOverriddenCost, 1)
     : card.type === "minion" && player.board.some((minion) => !minion.silenced && hasRule(getCard(catalog, minion.cardId), "dragon_aviana"))
       ? 1
-      : instance.costOverride ?? card.cost;
+      : printedOrOverriddenCost;
   const cost = baseCost + tax;
   return opponentHasRuleOnBoard(game, seat, "razorscale", catalog) ? Math.max(cost, 2) : cost;
 }

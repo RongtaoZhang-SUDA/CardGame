@@ -1,4 +1,4 @@
-import { Ban, CheckCircle2, DoorOpen, LogIn, Plus, RefreshCcw, Save, Shield, Swords, Trash2, Upload, WandSparkles } from "lucide-react";
+import { Ban, CheckCircle2, DoorOpen, Hammer, LogIn, Plus, RefreshCcw, Save, Shield, Swords, Trash2, Upload, WandSparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { io, type Socket } from "socket.io-client";
@@ -510,8 +510,14 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
               }} />;
             })}
             {self.board.map((minion) => {
-              const attackStatus = minionAttackStatus(minion, game.turn, isTurn);
-              return <MinionTile key={minion.instanceId} minion={minion} card={cardMap.get(minion.cardId)} attackStatus={attackStatus} targetable={Boolean(pending)} onClick={() => pending ? chooseTarget({ type: "minion", seat: self.seat, instanceId: minion.instanceId }) : attackStatus.ready ? setPending({ kind: "attack", source: { type: "minion", seat: self.seat, instanceId: minion.instanceId } }) : undefined} />;
+              const card = cardMap.get(minion.cardId);
+              const abilityReady = titanAbilityReady(minion, card, game.turn, isTurn);
+              const attackStatus = minionAttackStatus(minion, card, game.turn, isTurn);
+              return <MinionTile key={minion.instanceId} minion={minion} card={card} attackStatus={attackStatus} targetable={Boolean(pending)} onClick={() => {
+                if (pending) chooseTarget({ type: "minion", seat: self.seat, instanceId: minion.instanceId });
+                else if (abilityReady) send({ type: "use_titan_ability", minionInstanceId: minion.instanceId }).catch(showError(setNotice));
+                else if (attackStatus.ready) setPending({ kind: "attack", source: { type: "minion", seat: self.seat, instanceId: minion.instanceId } });
+              }} />;
             })}
           </div>
 
@@ -521,26 +527,37 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
             {self.hand.map((instance, index) => {
               const card = cardMap.get(instance.cardId ?? "");
               if (!card) return null;
-              const playCost = cardPlayCost(card, instance.costOverride, self, opponent.board, game.turn, cardMap);
+              const playCost = cardPlayCost(card, instance.costOverride, self, opponent.board, game.turn, game.ceaselessEvents, cardMap);
               const playable = isTurn && playCost <= self.mana;
+              const forgeable = isTurn && Boolean(card.forgeable) && !instance.forged && self.mana >= 2;
               return (
-                <CardTile
-                  key={instance.instanceId}
-                  card={card}
-                  cost={playCost}
-                  count={instance.remainingUses ?? card.repeatableUses}
-                  attack={instance.attackOverride}
-                  health={instance.healthOverride}
-                  disabled={!playable}
-                  selected={pending?.kind === "play" && pending.handInstanceId === instance.instanceId}
-                  className={`hand-card ${playable ? "playable" : "unplayable"}`}
-                  style={handStyle(index, self.hand.length)}
-                  onClick={() => {
-                    if (!playable) return;
-                    if (card.type !== "location" && cardNeedsTarget(card)) setPending({ kind: "play", handInstanceId: instance.instanceId });
-                    else send({ type: "play_card", handInstanceId: instance.instanceId }).catch(showError(setNotice));
-                  }}
-                />
+                <div key={instance.instanceId} className="hand-card-shell" style={handStyle(index, self.hand.length)}>
+                  <CardTile
+                    card={card}
+                    cost={playCost}
+                    count={instance.remainingUses ?? card.repeatableUses}
+                    attack={instance.attackOverride}
+                    health={instance.healthOverride}
+                    forged={instance.forged}
+                    disabled={!playable}
+                    selected={pending?.kind === "play" && pending.handInstanceId === instance.instanceId}
+                    className={`hand-card ${playable ? "playable" : "unplayable"}`}
+                    onClick={() => {
+                      if (!playable) return;
+                      if (card.type !== "location" && cardNeedsTarget(card)) setPending({ kind: "play", handInstanceId: instance.instanceId });
+                      else send({ type: "play_card", handInstanceId: instance.instanceId }).catch(showError(setNotice));
+                    }}
+                  />
+                  {card.forgeable && (
+                    <button className="forge-button" disabled={!forgeable} onClick={(event) => {
+                      event.stopPropagation();
+                      if (!forgeable) return;
+                      send({ type: "forge_card", handInstanceId: instance.instanceId }).catch(showError(setNotice));
+                    }}>
+                      <Hammer size={13} /> {instance.forged ? "已锻造" : "锻造 2"}
+                    </button>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -593,7 +610,7 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
                       card={optionCard}
                       className="choice-card"
                       onClick={() => {
-                        if (choiceForSelf.kind === "card_choice" && cardNeedsTarget(optionCard)) {
+                        if ((choiceForSelf.kind === "card_choice" || choiceForSelf.kind === "titan_ability") && cardNeedsTarget(optionCard)) {
                           setPending({ kind: "choice", choiceId: choiceForSelf.id, optionInstanceId: option.instanceId });
                           setNotice(`已选择 ${optionCard.name}，请点击目标。`);
                         }
@@ -686,7 +703,7 @@ function LocationTile({ location, card, ready, cooldown, targetable, onClick }: 
   );
 }
 
-function CardTile({ card, cost = card.cost, count, attack = card.attack, health = card.health, selected, disabled, className = "", style, onClick }: { card: CardDefinition; cost?: number; count?: number; attack?: number; health?: number; selected?: boolean; disabled?: boolean; className?: string; style?: CSSProperties; onClick?: () => void }) {
+function CardTile({ card, cost = card.cost, count, attack = card.attack, health = card.health, selected, disabled, forged, className = "", style, onClick }: { card: CardDefinition; cost?: number; count?: number; attack?: number; health?: number; selected?: boolean; disabled?: boolean; forged?: boolean; className?: string; style?: CSSProperties; onClick?: () => void }) {
   const hasStats = card.type === "minion" || card.type === "weapon" || card.type === "location";
   return (
     <button className={`card-tile rarity-${card.rarity} ${selected ? "selected" : ""} ${className}`} style={style} disabled={disabled} onClick={onClick}>
@@ -704,6 +721,7 @@ function CardTile({ card, cost = card.cost, count, attack = card.attack, health 
         </span>
       )}
       {count !== undefined && <em className="count">x{count}</em>}
+      {forged && <em className="forged-mark">已锻造</em>}
     </button>
   );
 }
@@ -773,11 +791,12 @@ function heroAttackValue(player: PublicGameState["players"][number]): number {
   return (player.hero.weapon?.attack ?? 0) + player.hero.temporaryAttack;
 }
 
-function cardPlayCost(card: CardDefinition, costOverride: number | undefined, player: PublicGameState["players"][number], opponentBoard: PublicGameState["players"][number]["board"], turn: number, cardMap: Map<string, CardDefinition>): number {
+function cardPlayCost(card: CardDefinition, costOverride: number | undefined, player: PublicGameState["players"][number], opponentBoard: PublicGameState["players"][number]["board"], turn: number, ceaselessEvents: number | undefined, cardMap: Map<string, CardDefinition>): number {
   const hasRazorscale = opponentBoard.some((minion) => !minion.silenced && cardMap.get(minion.cardId)?.rules?.includes("razorscale"));
   const hasAviana = player.board.some((minion) => !minion.silenced && cardMap.get(minion.cardId)?.rules?.includes("dragon_aviana"));
   const spellTax = card.type === "spell" && player.spellCostIncrease?.throughTurn === turn ? player.spellCostIncrease.amount : 0;
-  const printedOrOverriddenCost = costOverride ?? card.cost;
+  const dynamicCost = card.rules?.includes("priest_ceaseless_expanse") ? Math.max(0, card.cost - (ceaselessEvents ?? 0)) : card.cost;
+  const printedOrOverriddenCost = costOverride ?? dynamicCost;
   const baseCost = player.avianaActive ? Math.min(printedOrOverriddenCost, 1) : card.type === "minion" && hasAviana ? 1 : printedOrOverriddenCost;
   const cost = baseCost + spellTax;
   return hasRazorscale ? Math.max(cost, 2) : cost;
@@ -789,8 +808,24 @@ function heroPowerPlayCost(player: PublicGameState["players"][number], card: Car
   return player.hero.heroPowerCost ?? card?.cost ?? 2;
 }
 
-function minionAttackStatus(minion: PublicGameState["players"][number]["board"][number], turn: number, isTurn: boolean): { ready: boolean; label: string } {
+function titanAbilityIds(card: CardDefinition | undefined): string[] {
+  if (card?.titanAbilityCardIds?.length) return card.titanAbilityCardIds;
+  if (card?.races?.includes("TITAN") && card.choiceOptionCardIds?.length) return card.choiceOptionCardIds;
+  return [];
+}
+
+function titanRemainingAbilityIds(minion: PublicGameState["players"][number]["board"][number], card: CardDefinition | undefined): string[] {
+  const used = new Set(minion.usedTitanAbilityCardIds ?? []);
+  return titanAbilityIds(card).filter((cardId) => !used.has(cardId));
+}
+
+function titanAbilityReady(minion: PublicGameState["players"][number]["board"][number], card: CardDefinition | undefined, turn: number, isTurn: boolean): boolean {
+  return Boolean(isTurn && !minion.silenced && (minion.frozenUntilTurn ?? -1) < turn && minion.titanAbilityUsedTurn !== turn && titanRemainingAbilityIds(minion, card).length > 0);
+}
+
+function minionAttackStatus(minion: PublicGameState["players"][number]["board"][number], card: CardDefinition | undefined, turn: number, isTurn: boolean): { ready: boolean; label: string } {
   if (!isTurn) return { ready: false, label: "等待" };
+  if (titanRemainingAbilityIds(minion, card).length > 0) return { ready: false, label: minion.titanAbilityUsedTurn === turn ? "技能已用" : "泰坦技能" };
   if (minion.cannotAttack) return { ready: false, label: "无法攻击" };
   if (minion.attack <= 0) return { ready: false, label: "无法攻击" };
   if ((minion.frozenUntilTurn ?? -1) >= turn) return { ready: false, label: "冻结" };
@@ -819,6 +854,7 @@ function keywordLabel(keyword: string): string {
     deathrattle: "亡语",
     battlecry: "战吼",
     windfury: "风怒",
+    poisonous: "剧毒",
     spell_damage: "法强"
   };
   return labels[keyword] ?? keyword;

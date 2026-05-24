@@ -272,6 +272,7 @@ describe("game engine", () => {
       card.effects.length === 0
       && !card.rules?.length
       && !card.choiceOptionCardIds?.length
+      && !card.titanAbilityCardIds?.length
       && !card.deckRules
       && card.keywords.length === 0
     );

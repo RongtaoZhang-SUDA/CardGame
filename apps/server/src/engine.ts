@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { GAME_RULES, cardNeedsTarget, type BoardLocation, type BoardMinion, type CardDefinition, type CardEffect, type CardInstance, type CollectibleClass, type DeckDefinition, type EffectTrigger, type GameAction, type GameLogEntry, type GameState, type Keyword, type PlayerGameState, type PublicGameState, type Seat, type TargetRef } from "@dormstone/shared";
+import { GAME_RULES, cardNeedsTarget, type BoardLocation, type BoardMinion, type CardDefinition, type CardEffect, type CardInstance, type CollectibleClass, type DeckDefinition, type EffectTrigger, type GameAction, type GameLogEntry, type GameState, type IgnisWeaponData, type Keyword, type PlayerGameState, type PublicGameState, type Seat, type TargetRef } from "@dormstone/shared";
 
 interface GamePlayerInput {
   nickname: string;
@@ -13,6 +13,43 @@ interface EffectContext {
   sourceOwner: Seat;
   trigger: EffectTrigger;
 }
+
+const KILJAEDEN_DEMON_CARD_IDS = [
+  "reno_portal_voidwalker",
+  "reno_portal_flame_imp",
+  "reno_portal_succubus",
+  "reno_portal_felguard",
+  "reno_portal_voidcaller",
+  "reno_portal_doomguard",
+  "reno_portal_felsoul_jailer",
+  "reno_portal_abyssal_enforcer",
+  "reno_portal_illidari_inquisitor",
+  "reno_portal_malganis",
+  "reno_portal_lord_jaraxxus",
+  "reno_portal_archimonde"
+];
+
+const IGNIS_BASE_OPTIONS: Record<string, IgnisWeaponData> = {
+  reno_choice_ignis_base_1: { attack: 2, durability: 2 },
+  reno_choice_ignis_base_5: { attack: 3, durability: 4 },
+  reno_choice_ignis_base_10: { attack: 5, durability: 6 }
+};
+
+const IGNIS_TRAIT_CARD_IDS = [
+  "reno_choice_ignis_trait_poisonous",
+  "reno_choice_ignis_trait_lifesteal",
+  "reno_choice_ignis_trait_windfury",
+  "reno_choice_ignis_trait_adjacent",
+  "reno_choice_ignis_trait_immune"
+];
+
+const IGNIS_SPECIAL_CARD_IDS = [
+  "reno_choice_ignis_special_summon",
+  "reno_choice_ignis_special_damage",
+  "reno_choice_ignis_special_draw",
+  "reno_choice_ignis_special_deathrattle",
+  "reno_choice_ignis_special_armor"
+];
 
 export function createGame(roomCode: string, players: [GamePlayerInput, GamePlayerInput], cards: CardDefinition[], seed = Date.now()): GameState {
   const catalog = catalogFrom(cards);
@@ -30,6 +67,7 @@ export function createGame(roomCode: string, players: [GamePlayerInput, GamePlay
     ],
     logs: []
   };
+  applyStartOfGameRules(game, catalog);
   shuffle(game.players[0].deck, rng(seed + 11));
   shuffle(game.players[1].deck, rng(seed + 29));
   drawCards(game, firstSeat, GAME_RULES.startingHand[0], catalog, false);
@@ -69,8 +107,14 @@ export function applyGameAction(game: GameState, actorNickname: string, action: 
     case "play_card":
       playCard(game, actorSeat, action.handInstanceId, action.target, catalog);
       break;
+    case "forge_card":
+      forgeCard(game, actorSeat, action.handInstanceId, catalog);
+      break;
     case "use_location":
       useLocation(game, actorSeat, action.locationInstanceId, action.target, catalog);
+      break;
+    case "use_titan_ability":
+      useTitanAbility(game, actorSeat, action.minionInstanceId, catalog);
       break;
     case "attack":
       attack(game, actorSeat, action.source, action.target, catalog);
@@ -140,8 +184,24 @@ function createPlayerState(seat: Seat, input: GamePlayerInput, catalog: Map<stri
     manaCap: GAME_RULES.maxMana,
     mana: 0,
     fatigue: 0,
-    mulliganDone: false
+    mulliganDone: false,
+    spellsCastThisGame: 0,
+    forgedThisGame: false
   };
+}
+
+function applyStartOfGameRules(game: GameState, catalog: Map<string, CardDefinition>): void {
+  const hasEmeraldYsera = game.players.some((player) =>
+    player.deck.some((instance) => hasRule(getCard(catalog, instance.cardId), "priest_ysera_emerald"))
+  );
+  if (hasEmeraldYsera) {
+    for (const player of game.players) player.manaCap = GAME_RULES.maxMana + 5;
+    addLog(game, "伊瑟拉，翡翠守护巨龙使双方玩家的法力水晶上限提高到 15。");
+  }
+}
+
+function countCeaselessEvent(game: GameState, _reason: string): void {
+  game.ceaselessEvents = (game.ceaselessEvents ?? 0) + 1;
 }
 
 function applyMulligan(game: GameState, seat: Seat, cardInstanceIds: string[], catalog: Map<string, CardDefinition>): void {
@@ -180,6 +240,8 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
   if ((card.type === "minion" || card.type === "location") && occupiedBoardSlots(player) >= GAME_RULES.maxBoardSize) throw new Error("战场已满。");
   player.mana -= cost;
   player.hand.splice(handIndex, 1);
+  countCeaselessEvent(game, card.type === "spell" ? "法术被使用" : "卡牌被使用");
+  if (card.type === "spell") player.spellsCastThisGame = (player.spellsCastThisGame ?? 0) + 1;
   if (counterPlayedCard(game, seat, card, catalog)) {
     player.graveyard.push(card.id);
     return;
@@ -199,20 +261,31 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
     const battlecryRepeats = !hasRule(card, "dragon_brann") && player.board.some((boardMinion) => !boardMinion.silenced && hasRule(getCard(catalog, boardMinion.cardId), "dragon_brann")) ? 2 : 1;
     for (let repeat = 0; repeat < battlecryRepeats; repeat += 1) {
       applyEffects(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "battlecry" }, catalog);
-      applyRuleBattlecry(game, seat, card, target, catalog);
+      applyRuleBattlecry(game, seat, instance, card, target, catalog);
     }
     beginCardChoice(game, seat, card, catalog, minion.instanceId);
     updateFloopCopies(player, card, minion.instanceId);
   } else if (card.type === "spell") {
     addLog(game, `${player.nickname} 使用了 ${card.name}。`);
     applyEffects(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "play" }, catalog);
-    applyRulePlay(game, seat, card, target, catalog);
+    applyRulePlay(game, seat, instance, card, target, catalog);
     beginCardChoice(game, seat, card, catalog);
     const remainingUses = instance.remainingUses ?? card.repeatableUses ?? 1;
     if (remainingUses > 1) player.hand.push({ ...instance, remainingUses: remainingUses - 1 });
     else player.graveyard.push(card.id);
   } else if (card.type === "weapon") {
-    player.hero.weapon = { cardId: card.id, attack: card.attack ?? 0, durability: card.durability ?? 1 };
+    if (player.hero.weapon) destroyHeroWeapon(game, seat, catalog, card.name);
+    player.hero.weapon = {
+      cardId: card.id,
+      attack: instance.ignisWeapon?.attack ?? card.attack ?? 0,
+      durability: instance.ignisWeapon?.durability ?? card.durability ?? 1,
+      keywords: instance.ignisWeapon?.keywords,
+      ignisWeapon: instance.ignisWeapon
+    };
+    if (instance.ignisWeapon?.battlecryDamage) {
+      if (!target) throw new Error("这把武器需要选择战吼伤害目标。");
+      dealDamage(game, target, instance.ignisWeapon.battlecryDamage, seat, catalog, Boolean(instance.ignisWeapon.keywords?.includes("lifesteal")));
+    }
     addLog(game, `${player.nickname} 装备了 ${card.name}。`);
     player.graveyard.push(card.id);
   } else if (card.type === "location") {
@@ -221,7 +294,7 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
   } else if (card.type === "hero") {
     addLog(game, `${player.nickname} 化身为 ${card.name}。`);
     applyEffects(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "play" }, catalog);
-    applyRulePlay(game, seat, card, target, catalog);
+    applyRulePlay(game, seat, instance, card, target, catalog);
     player.graveyard.push(card.id);
   }
   if (instance.drawnTurn === game.turn) {
@@ -229,6 +302,20 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
   }
   drawMoonlitOriginal(game, seat, instance, catalog);
   cleanupDeaths(game, catalog);
+}
+
+function forgeCard(game: GameState, seat: Seat, handInstanceId: string, catalog: Map<string, CardDefinition>): void {
+  const player = game.players[seat];
+  const instance = player.hand.find((card) => card.instanceId === handInstanceId);
+  if (!instance) throw new Error("找不到要锻造的手牌。");
+  const card = getCard(catalog, instance.cardId);
+  if (!card.forgeable) throw new Error("这张牌不能锻造。");
+  if (instance.forged) throw new Error("这张牌已经锻造过。");
+  if (player.mana < 2) throw new Error("法力不足，无法锻造。");
+  player.mana -= 2;
+  instance.forged = true;
+  player.forgedThisGame = true;
+  addLog(game, `${player.nickname} 锻造了 ${card.name}。`);
 }
 
 function useLocation(game: GameState, seat: Seat, locationInstanceId: string, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
@@ -252,7 +339,21 @@ function useLocation(game: GameState, seat: Seat, locationInstanceId: string, ta
   cleanupDeaths(game, catalog);
 }
 
-function applyRuleBattlecry(game: GameState, seat: Seat, card: CardDefinition, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
+function useTitanAbility(game: GameState, seat: Seat, minionInstanceId: string, catalog: Map<string, CardDefinition>): void {
+  const player = game.players[seat];
+  const minion = player.board.find((item) => item.instanceId === minionInstanceId);
+  if (!minion) throw new Error("娉板潶闅忎粠涓嶅湪鎴樺満銆?");
+  if (minion.silenced) throw new Error("娉板潶宸茶娌夐粯銆?");
+  if ((minion.frozenUntilTurn ?? -1) >= game.turn) throw new Error("娉板潶琚喕缁擄紝涓嶈兘浣跨敤鎶€鑳姐€?");
+  if (minion.titanAbilityUsedTurn === game.turn) throw new Error("杩欎釜娉板潶鏈洖鍚堝凡缁忎娇鐢ㄨ繃鎶€鑳姐€?");
+  const card = getCard(catalog, minion.cardId);
+  const remaining = remainingTitanAbilityIds(minion, card);
+  if (remaining.length === 0) throw new Error("杩欎釜娉板潶宸茬粡娌℃湁鍙敤鎶€鑳姐€?");
+  const options = remaining.map((cardId) => createInstance(cardId, seat));
+  beginChoice(game, seat, "titan_ability", `閫夋嫨 ${card.name} 鐨勬 泰坦技能。`, options, undefined, minion.instanceId);
+}
+
+function applyRuleBattlecry(game: GameState, seat: Seat, instance: CardInstance, card: CardDefinition, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
   const player = game.players[seat];
   const enemy = game.players[other(seat)];
   if (hasRule(card, "etc_band_manager")) {
@@ -271,8 +372,7 @@ function applyRuleBattlecry(game: GameState, seat: Seat, card: CardDefinition, t
     const weapon = enemy.hero.weapon;
     if (!weapon) addLog(game, `${card.name} 没有找到可摧毁的敌方武器。`);
     else {
-      enemy.graveyard.push(weapon.cardId);
-      delete enemy.hero.weapon;
+      destroyHeroWeapon(game, other(seat), catalog, card.name);
       addLog(game, `${card.name} 摧毁了 ${enemy.nickname} 的武器。`);
     }
   }
@@ -295,8 +395,7 @@ function applyRuleBattlecry(game: GameState, seat: Seat, card: CardDefinition, t
     if (!weapon) addLog(game, `${card.name} 没有找到可摧毁的敌方武器。`);
     else {
       const durability = weapon.durability;
-      enemy.graveyard.push(weapon.cardId);
-      delete enemy.hero.weapon;
+      destroyHeroWeapon(game, other(seat), catalog, card.name);
       addLog(game, `${card.name} 摧毁了 ${enemy.nickname} 的武器，并让 ${player.nickname} 抽 ${durability} 张牌。`);
       drawCards(game, seat, durability, catalog, true);
     }
@@ -316,11 +415,25 @@ function applyRuleBattlecry(game: GameState, seat: Seat, card: CardDefinition, t
   if (hasRule(card, "priest_lazul")) discoverEnemyHandCopy(game, seat, card.name);
   if (hasRule(card, "priest_harvester")) copyRandomHandCard(game, seat, catalog, card.name);
   if (hasRule(card, "priest_holmes")) copyRandomCards(game, seat, game.players[other(seat)].deck, 2, catalog, `${card.name} 复制了线索牌`);
-  if (hasRule(card, "priest_banker")) copyRandomSpell(game, seat, catalog, card.name);
+  if (hasRule(card, "priest_banker")) benevolentBanker(game, seat, instance, catalog, card.name);
+  if (hasRule(card, "priest_cozy_voljin")) beginVoljinSwap(game, seat, target, catalog, card.name);
+  if (hasRule(card, "priest_zola")) zolaCopy(game, seat, target, catalog, card.name);
+  if (hasRule(card, "priest_nameless_one")) namelessOne(game, seat, target, catalog, card.name);
   if (hasRule(card, "priest_najark")) borrowEnemyMinion(game, seat, target, catalog, card.name);
+  if (hasRule(card, "priest_glowstone_gyreworm")) glowstoneGyreworm(game, seat, instance, target, catalog, card.name);
+  if (hasRule(card, "priest_mind_control_tech")) mindControlTech(game, seat, catalog, card.name);
+  if (hasRule(card, "priest_zilliax_twin_perfect")) twinPerfectZilliax(game, seat, instance.instanceId, catalog, card.name);
+  if (hasRule(card, "priest_ignis")) ignisWeapon(game, seat, catalog, card.name);
+  if (hasRule(card, "priest_elise_badlands")) eliseBadlands(game, seat, catalog, card.name);
+  if (hasRule(card, "priest_marin_manager")) marinManager(game, seat, catalog, card.name);
+  if (card.id === "reno_token_marin_kobold") marinGoldenKobold(game, seat, catalog, card.name);
   if (hasRule(card, "priest_loatheb")) taxNextSpells(game, other(seat), 5, card.name);
   if (hasRule(card, "priest_spawn_of_shadows")) damageBothHeroes(game, seat, 4, catalog);
   if (hasRule(card, "priest_aviana")) beginAvianaCountdown(game, seat, card.name);
+  if (hasRule(card, "priest_ceaseless_expanse")) ceaselessExpanseBattlecry(game, seat, instance.instanceId, catalog, card.name);
+  if (hasRule(card, "priest_ysera_emerald")) gainFullManaCrystals(game, seat, 3, card.name);
+  if (hasRule(card, "priest_fizzle")) photographerFizzle(game, seat, catalog, card.name);
+  if (hasRule(card, "priest_kiljaeden")) kiljaedenPortal(game, seat, catalog, card.name);
   if (hasRule(card, "dragon_astalor")) astalorBloodsworn(game, seat, catalog);
   if (hasRule(card, "dragon_astalor_protector")) astalorProtector(game, seat, catalog);
   if (hasRule(card, "dragon_astalor_flamebringer")) dealRandomEnemyDamage(game, seat, player.maxMana >= 10 ? 14 : 7, catalog, card.name);
@@ -349,7 +462,7 @@ function applyRuleBattlecry(game: GameState, seat: Seat, card: CardDefinition, t
   if (hasRule(card, "dragon_rheastrasza")) summonPureNest(game, seat, catalog, card.name);
 }
 
-function applyRulePlay(game: GameState, seat: Seat, card: CardDefinition, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
+function applyRulePlay(game: GameState, seat: Seat, instance: CardInstance, card: CardDefinition, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
   const player = game.players[seat];
   if (hasRule(card, "savage_roar")) {
     player.hero.temporaryAttack += 2;
@@ -370,8 +483,26 @@ function applyRulePlay(game: GameState, seat: Seat, card: CardDefinition, target
   }
   if (hasRule(card, "swipe")) swipe(game, seat, target, catalog);
   if (hasRule(card, "priest_raise_dead")) raiseDead(game, seat, catalog);
+  if (hasRule(card, "priest_mend")) mend(game, seat, target, catalog, card.name);
+  if (hasRule(card, "priest_power_word_barrier")) powerWordBarrier(game, seat, target, catalog, card.name);
+  if (hasRule(card, "priest_creation_protocol")) creationProtocol(game, seat, instance, catalog, card.name);
   if (hasRule(card, "priest_identity_theft")) identityTheft(game, seat, catalog);
+  if (hasRule(card, "priest_thoughtsteal")) copyRandomCards(game, seat, game.players[other(seat)].deck, 2, catalog, `${card.name} 窃取了对手牌库`);
+  if (hasRule(card, "priest_shadow_word_death")) shadowWordDeath(game, target, catalog, card.name);
+  if (hasRule(card, "priest_power_chord_synchronize")) powerChordSynchronize(game, seat, target, catalog, card.name);
+  if (hasRule(card, "priest_twilight_torrent")) twilightTorrent(game, seat, target, catalog, card.name);
   if (hasRule(card, "priest_hysteria")) hysteria(game, seat, target, catalog, card.name);
+  if (hasRule(card, "priest_shadow_word_ruin")) shadowWordRuin(game, catalog, card.name);
+  if (hasRule(card, "priest_repackage")) repackageMinions(game, seat, catalog, card.name);
+  if (hasRule(card, "priest_repackaged_box")) openRepackagedBox(game, seat, instance, catalog, card.name);
+  if (hasRule(card, "priest_dragonfire_potion")) dragonfirePotion(game, seat, catalog, card.name);
+  if (hasRule(card, "priest_harmonic_pop")) harmonicPop(game, seat, 3, "reno_token_harmonic_popstar", catalog, card.name);
+  if (hasRule(card, "priest_dissonant_pop")) harmonicPop(game, seat, 6, "reno_token_dissonant_popstar", catalog, card.name);
+  if (hasRule(card, "priest_lightbomb")) lightbomb(game, seat, catalog, card.name);
+  if (hasRule(card, "priest_fizzle_snapshot")) fizzleSnapshot(game, seat, instance, catalog, card.name);
+  if (card.id === "reno_token_marin_wand") marinWand(game, seat, catalog, card.name);
+  if (card.id === "reno_token_marin_crown") marinCrown(game, seat, catalog, card.name);
+  if (card.id === "reno_token_marin_goblet") marinGoblet(game, seat, catalog, card.name);
   if (hasRule(card, "priest_lone_ranger_reno")) {
     clearEnemyBoard(game, seat, catalog, card.name);
     equipRenoBullet(game, seat, catalog);
@@ -394,6 +525,7 @@ function applyRuleLocation(game: GameState, seat: Seat, card: CardDefinition, ta
 }
 
 function beginCardChoice(game: GameState, seat: Seat, card: CardDefinition, catalog: Map<string, CardDefinition>, sourceInstanceId?: string): void {
+  if (titanAbilityIds(card).length > 0) return;
   if (!card.choiceOptionCardIds?.length) return;
   const options = card.choiceOptionCardIds.map((cardId) => {
     getCard(catalog, cardId);
@@ -427,6 +559,41 @@ function applyChoice(game: GameState, seat: Seat, choiceId: string, optionInstan
     return;
   }
 
+  if (choice.kind === "voljin_second_minion") {
+    resolveVoljinSwap(game, seat, choice.chosenFriendlyInstanceId, option.instanceId, catalog);
+    delete game.pendingChoice;
+    return;
+  }
+
+  if (choice.kind === "amanthul_second_enemy") {
+    resolveAmanthulSecondExile(game, seat, choice.chosenFriendlyInstanceId, option.instanceId, choice.sourceInstanceId, catalog);
+    delete game.pendingChoice;
+    cleanupDeaths(game, catalog);
+    return;
+  }
+
+  if (choice.kind === "kiljaeden_demon") {
+    chooseKiljaedenDemon(game, seat, option, catalog);
+    delete game.pendingChoice;
+    return;
+  }
+
+  if (choice.kind === "ignis_base") {
+    chooseIgnisBase(game, seat, option.cardId, catalog);
+    return;
+  }
+
+  if (choice.kind === "ignis_trait") {
+    chooseIgnisTrait(game, seat, option.cardId, choice.ignisWeapon, catalog);
+    return;
+  }
+
+  if (choice.kind === "ignis_special") {
+    chooseIgnisSpecial(game, seat, option.cardId, choice.ignisWeapon, catalog);
+    delete game.pendingChoice;
+    return;
+  }
+
   if (choice.kind === "etc_band") {
     const player = game.players[seat];
     const sideboardIndex = (player.sideboard ?? []).findIndex((item) => item.instanceId === option.instanceId);
@@ -437,11 +604,16 @@ function applyChoice(game: GameState, seat: Seat, choiceId: string, optionInstan
     return;
   }
 
-  if (choice.kind === "card_choice") {
+  if (choice.kind === "card_choice" || choice.kind === "titan_ability") {
     const optionCard = getCard(catalog, option.cardId);
     if (cardNeedsTarget(optionCard) && !target) throw new Error("这个抉择效果需要选择目标。");
+    if (choice.kind === "titan_ability" && hasRule(optionCard, "priest_amanthul_exile")) {
+      beginAmanthulSecondExile(game, seat, choice.sourceInstanceId, target, catalog, optionCard.name);
+      return;
+    }
     applyEffects(game, { sourceCard: optionCard, sourceOwner: seat, selectedTarget: target, trigger: "play" }, catalog);
     applyRuleChoice(game, seat, optionCard, choice.sourceInstanceId, target, catalog);
+    if (choice.kind === "titan_ability") markTitanAbilityUsed(game, seat, choice.sourceInstanceId, optionCard.id, catalog);
     addLog(game, `${game.players[seat].nickname} 选择了 ${optionCard.name}。`);
     delete game.pendingChoice;
     cleanupDeaths(game, catalog);
@@ -463,7 +635,11 @@ function applyChoice(game: GameState, seat: Seat, choiceId: string, optionInstan
   }
 
   if (choice.kind === "discover_to_hand") {
-    addCardToHand(game, seat, { ...option, owner: seat }, catalog, `选择了 ${getCard(catalog, option.cardId).name}。`);
+    const copies = choice.copiesToAdd ?? 1;
+    for (let count = 0; count < copies; count += 1) {
+      const copy = count === 0 ? { ...option, owner: seat } : cloneGeneratedChoiceOption(option, seat);
+      addCardToHand(game, seat, copy, catalog, `选择了 ${getCard(catalog, option.cardId).name}。`);
+    }
     delete game.pendingChoice;
     return;
   }
@@ -482,7 +658,7 @@ function applyChoice(game: GameState, seat: Seat, choiceId: string, optionInstan
   delete game.pendingChoice;
 }
 
-function beginChoice(game: GameState, seat: Seat, kind: NonNullable<GameState["pendingChoice"]>["kind"], prompt: string, options: CardInstance[], chosenFriendlyInstanceId?: string, sourceInstanceId?: string): void {
+function beginChoice(game: GameState, seat: Seat, kind: NonNullable<GameState["pendingChoice"]>["kind"], prompt: string, options: CardInstance[], chosenFriendlyInstanceId?: string, sourceInstanceId?: string, copiesToAdd?: number, ignisWeapon?: IgnisWeaponData): void {
   game.pendingChoice = {
     id: randomUUID(),
     seat,
@@ -490,7 +666,9 @@ function beginChoice(game: GameState, seat: Seat, kind: NonNullable<GameState["p
     prompt,
     options: [...options],
     chosenFriendlyInstanceId,
-    sourceInstanceId
+    sourceInstanceId,
+    copiesToAdd,
+    ignisWeapon
   };
 }
 
@@ -510,6 +688,7 @@ function addCardToHand(game: GameState, seat: Seat, instance: CardInstance, cata
   const player = game.players[seat];
   if (player.hand.length >= GAME_RULES.maxHandSize) {
     player.graveyard.push(instance.cardId);
+    countCeaselessEvent(game, "卡牌被摧毁");
     addLog(game, `${getCard(catalog, instance.cardId).name} 因手牌已满被弃置。`);
     return;
   }
@@ -614,6 +793,15 @@ function gainEmptyMana(game: GameState, seat: Seat, amount: number, sourceName: 
   const before = player.maxMana;
   player.maxMana = Math.min(player.manaCap ?? GAME_RULES.maxMana, player.maxMana + amount);
   addLog(game, `${sourceName} 使 ${player.nickname} 获得 ${player.maxMana - before} 个空的法力水晶。`);
+}
+
+function gainFullManaCrystals(game: GameState, seat: Seat, amount: number, sourceName: string): void {
+  const player = game.players[seat];
+  const before = player.maxMana;
+  player.maxMana = Math.min(player.manaCap ?? GAME_RULES.maxMana, player.maxMana + amount);
+  const gained = player.maxMana - before;
+  player.mana += gained;
+  addLog(game, `${sourceName} 使 ${player.nickname} 获得 ${gained} 个法力水晶。`);
 }
 
 function refreshMana(game: GameState, seat: Seat, amount: number, sourceName: string): void {
@@ -970,6 +1158,26 @@ function applyRuleChoice(game: GameState, seat: Seat, optionCard: CardDefinition
     source.counterNextCardType = hasRule(optionCard, "priest_okani_minion") ? "minion" : "spell";
     addLog(game, `${getCard(catalog, source.cardId).name} 准备反制下一张敌方${source.counterNextCardType === "minion" ? "随从牌" : "法术牌"}。`);
   }
+  if (hasRule(optionCard, "priest_amanthul_copy")) {
+    amanthulCopy(game, seat, target, catalog, optionCard.name);
+    discoverLegendaryMinionToHand(game, seat, catalog, "阿曼苏尔");
+  }
+  if (hasRule(optionCard, "priest_amanthul_summon")) {
+    amanthulSummon(game, seat, catalog, optionCard.name);
+    discoverLegendaryMinionToHand(game, seat, catalog, "阿曼苏尔");
+  }
+  if (hasRule(optionCard, "priest_yogg_control")) {
+    yoggMindControl(game, seat, target, catalog, optionCard.name);
+    yoggRandomSpells(game, seat, catalog, "脱困古神尤格-萨隆");
+  }
+  if (hasRule(optionCard, "priest_yogg_tendrils")) {
+    yoggTendrils(game, seat, catalog, optionCard.name);
+    yoggRandomSpells(game, seat, catalog, "脱困古神尤格-萨隆");
+  }
+  if (hasRule(optionCard, "priest_yogg_madness")) {
+    yoggMadness(game, seat, catalog, optionCard.name);
+    yoggRandomSpells(game, seat, catalog, "脱困古神尤格-萨隆");
+  }
   if (hasRule(optionCard, "dragon_guff_ramp")) gainEmptyMana(game, seat, 1, optionCard.name);
   if (hasRule(optionCard, "dragon_bob_freeze")) freezeEnemyMinions(game, seat, catalog, optionCard.name);
   if (hasRule(optionCard, "dragon_bob_recruit")) recruitEnemyMinion(game, seat, target, catalog, optionCard.name);
@@ -1062,7 +1270,7 @@ function addHighlanderAnswer(game: GameState, seat: Seat, catalog: Map<string, C
 function buffKaldoreiSpirit(game: GameState, seat: Seat, card: CardDefinition, catalog: Map<string, CardDefinition>): void {
   if (!game.players[seat].hero.heroPowerUsed) return;
   const spirit = [...game.players[seat].board].reverse().find((minion) => minion.cardId === card.id);
-  if (spirit) buff(game, { type: "minion", seat, instanceId: spirit.instanceId }, 1, 1, catalog);
+  if (spirit) buff(game, { type: "minion", seat, instanceId: spirit.instanceId }, 3, 3, catalog);
 }
 
 function identityTheft(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
@@ -1184,6 +1392,623 @@ function copyRandomSpell(game: GameState, seat: Seat, catalog: Map<string, CardD
   copyRandomCards(game, seat, spells, 1, catalog, `${sourceName} 复制了敌方法术`);
 }
 
+function benevolentBanker(game: GameState, seat: Seat, instance: CardInstance, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const quickdraw = instance.drawnTurn === game.turn;
+  const sourceSeat = quickdraw ? other(seat) : seat;
+  const spells = game.players[sourceSeat].deck.filter((deckCard) => getCard(catalog, deckCard.cardId).type === "spell");
+  discoverCardCopies(game, seat, spells, catalog, quickdraw ? `${sourceName} 从敌方牌库发现一张法术。` : `${sourceName} 从己方牌库发现一张法术。`);
+}
+
+function discoverCardCopies(game: GameState, seat: Seat, source: CardInstance[], catalog: Map<string, CardDefinition>, prompt: string, amount = 3, copiesToAdd = 1): void {
+  const options = discoverInstanceOptions(game, seat, source, amount).map((option) => createInstance(option.cardId, seat));
+  if (options.length === 0) {
+    addLog(game, `${prompt} 但没有可选目标。`);
+    return;
+  }
+  beginChoice(game, seat, "discover_to_hand", prompt, options, undefined, undefined, copiesToAdd);
+}
+
+function discoverInstanceOptions(game: GameState, seat: Seat, source: CardInstance[], amount: number): CardInstance[] {
+  const random = rng(game.seed + game.turn * 617 + seat * 107 + source.length * 3 + game.logs.length);
+  const pool = [...source];
+  const options: CardInstance[] = [];
+  while (pool.length > 0 && options.length < amount) {
+    const [picked] = pool.splice(Math.floor(random() * pool.length), 1);
+    options.push(picked);
+  }
+  return options;
+}
+
+function mend(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion") throw new Error(`${sourceName} 需要选择一个随从。`);
+  const minion = findMinion(game, target);
+  if (!minion) throw new Error("治疗目标已经离开战场。");
+  heal(game, target, Math.max(0, minion.maxHealth - minion.health), catalog);
+  drawCards(game, seat, 1, catalog, true);
+}
+
+function powerWordBarrier(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target) throw new Error(`${sourceName} 需要选择一个角色。`);
+  if (target.type === "minion") {
+    const minion = findMinion(game, target);
+    if (!minion) throw new Error("目标随从已经离开战场。");
+    addKeyword(minion, "divine_shield");
+    addLog(game, `${targetName(game, target, catalog)} 获得圣盾。`);
+  } else {
+    game.players[target.seat].hero.armor += 2;
+    addLog(game, `${targetName(game, target, catalog)} 获得 2 点护甲。`);
+  }
+  buffMinionsInHand(game, seat, 0, 2, catalog, sourceName);
+}
+
+function creationProtocol(game: GameState, seat: Seat, instance: CardInstance, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  const minions = player.deck.filter((deckCard) => getCard(catalog, deckCard.cardId).type === "minion");
+  const copies = instance.forged ? 2 : 1;
+  discoverCardCopies(game, seat, minions, catalog, `${sourceName} 发现你牌库中一个随从的复制。`, 3, copies);
+}
+
+function shadowWordDeath(game: GameState, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion") throw new Error(`${sourceName} 需要选择一个随从。`);
+  const minion = findMinion(game, target);
+  if (!minion || minion.attack < 5) throw new Error(`${sourceName} 只能消灭攻击力至少为 5 的随从。`);
+  destroy(game, target, catalog);
+}
+
+function powerChordSynchronize(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion") throw new Error(`${sourceName} 需要选择一个随从。`);
+  const minion = findMinion(game, target);
+  if (!minion) throw new Error("同步目标已经离开战场。");
+  const copy = createInstance(minion.cardId, seat);
+  if (game.players[seat].mana === 0) {
+    buff(game, target, 1, 2, catalog);
+    copy.attackOverride = minion.attack + 1;
+    copy.healthOverride = minion.maxHealth + 2;
+  }
+  addCardToHand(game, seat, copy, catalog, `获得了 ${getCard(catalog, minion.cardId).name} 的复制。`);
+}
+
+function twilightTorrent(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target) throw new Error(`${sourceName} 需要选择一个角色。`);
+  if (target.seat === seat) heal(game, target, 6, catalog);
+  else dealDamage(game, target, 3, seat, catalog, false);
+}
+
+function shadowWordRuin(game: GameState, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  for (const player of game.players) {
+    for (const minion of [...player.board]) {
+      if (minion.attack >= 5) destroy(game, { type: "minion", seat: player.seat, instanceId: minion.instanceId }, catalog);
+    }
+  }
+  addLog(game, `${sourceName} 消灭了所有大型随从。`);
+}
+
+function repackageMinions(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const packedCardIds: string[] = [];
+  for (const player of game.players) {
+    const packed = player.board.splice(0);
+    for (const minion of packed) {
+      packedCardIds.push(minion.cardId);
+      player.graveyard.push(minion.cardId);
+      countCeaselessEvent(game, "随从被摧毁");
+    }
+  }
+  if (packedCardIds.length === 0) {
+    addLog(game, `${sourceName} 没有打包任何随从。`);
+    return;
+  }
+  const box = { ...createInstance("reno_token_repackaged_box", other(seat)), storedCardIds: packedCardIds };
+  game.players[other(seat)].deck.push(box);
+  shuffle(game.players[other(seat)].deck, rng(game.seed + game.turn * 653 + packedCardIds.length));
+  addLog(game, `${sourceName} 将 ${packedCardIds.length} 个随从塞进箱子并洗入对手牌库。`);
+}
+
+function openRepackagedBox(game: GameState, seat: Seat, instance: CardInstance, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const stored = instance.storedCardIds ?? [];
+  for (const cardId of stored) {
+    if (occupiedBoardSlots(game.players[seat]) >= GAME_RULES.maxBoardSize) break;
+    if (getCard(catalog, cardId).type === "minion") summon(game, seat, cardId, 1, catalog);
+  }
+  addLog(game, `${sourceName} 释放了 ${stored.length} 个被打包的随从。`);
+}
+
+function dragonfirePotion(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  for (const player of game.players) {
+    for (const minion of [...player.board]) {
+      if (!hasRace(getCard(catalog, minion.cardId), "DRAGON")) dealDamage(game, { type: "minion", seat: player.seat, instanceId: minion.instanceId }, 5, seat, catalog, false);
+    }
+  }
+  addLog(game, `${sourceName} 灼烧了所有非龙随从。`);
+}
+
+function harmonicPop(game: GameState, seat: Seat, damage: number, popstarCardId: string, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  for (const player of game.players) {
+    for (const minion of [...player.board]) {
+      dealDamage(game, { type: "minion", seat: player.seat, instanceId: minion.instanceId }, damage, seat, catalog, false);
+    }
+  }
+  cleanupDeaths(game, catalog);
+  summon(game, seat, popstarCardId, 1, catalog);
+  addLog(game, `${sourceName} 对所有随从造成 ${damage} 点伤害并召唤流行歌星。`);
+}
+
+function lightbomb(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  for (const player of game.players) {
+    for (const minion of [...player.board]) dealDamage(game, { type: "minion", seat: player.seat, instanceId: minion.instanceId }, minion.attack, seat, catalog, false);
+  }
+  addLog(game, `${sourceName} 对每个随从造成了等同于其攻击力的伤害。`);
+}
+
+function beginVoljinSwap(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion") throw new Error(`${sourceName} 需要先选择一个随从。`);
+  const first = findMinion(game, target);
+  if (!first) throw new Error("第一个沃金目标已经离开战场。");
+  const options = game.players.flatMap((player) => player.board.filter((minion) => minion.instanceId !== first.instanceId));
+  if (options.length === 0) {
+    addLog(game, `${sourceName} 没有第二个随从可交换。`);
+    return;
+  }
+  beginChoice(game, seat, "voljin_second_minion", "选择第二个随从与第一个随从交换属性值。", options, first.instanceId);
+}
+
+function resolveVoljinSwap(game: GameState, seat: Seat, firstInstanceId: string | undefined, secondInstanceId: string, catalog: Map<string, CardDefinition>): void {
+  const first = firstInstanceId ? findAnyBoardMinion(game, firstInstanceId) : undefined;
+  const second = findAnyBoardMinion(game, secondInstanceId);
+  if (!first || !second) throw new Error("沃金的目标已经离开战场。");
+  [first.minion.attack, second.minion.attack] = [second.minion.attack, first.minion.attack];
+  [first.minion.health, second.minion.health] = [second.minion.health, first.minion.health];
+  [first.minion.maxHealth, second.minion.maxHealth] = [second.minion.maxHealth, first.minion.maxHealth];
+  addLog(game, `${game.players[seat].nickname} 交换了 ${getCard(catalog, first.minion.cardId).name} 与 ${getCard(catalog, second.minion.cardId).name} 的属性值。`);
+}
+
+function zolaCopy(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion" || target.seat !== seat) throw new Error(`${sourceName} 需要选择一个友方随从。`);
+  const minion = findMinion(game, target);
+  if (!minion) throw new Error("佐拉的目标已经离开战场。");
+  addCardToHand(game, seat, copyMinionAsCard(minion, seat), catalog, `获得了 ${getCard(catalog, minion.cardId).name} 的金色复制。`);
+}
+
+function namelessOne(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion") throw new Error(`${sourceName} 需要选择一个随从。`);
+  const targetMinion = findMinion(game, target);
+  const source = sourceMinion(game, seat, "reno_priest_nameless_one");
+  if (!targetMinion || !source) throw new Error(`${sourceName} 没有可复制的目标。`);
+  source.cardId = targetMinion.cardId;
+  source.attack = 4;
+  source.health = 4;
+  source.maxHealth = 4;
+  source.attackOverride = 4;
+  source.healthOverride = 4;
+  source.keywords = [...targetMinion.keywords];
+  source.silenced = false;
+  silence(game, target, catalog);
+  addLog(game, `${sourceName} 变成了 ${getCard(catalog, targetMinion.cardId).name} 的 4/4 复制。`);
+}
+
+function glowstoneGyreworm(game: GameState, seat: Seat, instance: CardInstance, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const active = instance.drawnTurn === game.turn || Boolean(instance.forged);
+  if (!active) return;
+  if (!target) throw new Error(`${sourceName} 需要选择伤害目标。`);
+  dealDamage(game, target, 5, seat, catalog, true);
+  addLog(game, `${sourceName} 的快枪效果造成了 5 点伤害。`);
+}
+
+function mindControlTech(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const enemySeat = other(seat);
+  const enemy = game.players[enemySeat];
+  if (enemy.board.length < 4 || occupiedBoardSlots(game.players[seat]) >= GAME_RULES.maxBoardSize) {
+    addLog(game, `${sourceName} 没有找到可夺取的目标。`);
+    return;
+  }
+  const random = rng(game.seed + game.turn * 673 + enemy.board.length);
+  const index = Math.floor(random() * enemy.board.length);
+  const [stolen] = enemy.board.splice(index, 1);
+  stolen.owner = seat;
+  delete stolen.titanAbilityUsedTurn;
+  if (titanHasRemainingAbilities(stolen, catalog)) stolen.cannotAttack = true;
+  game.players[seat].board.push(stolen);
+  addLog(game, `${sourceName} 夺取了 ${getCard(catalog, stolen.cardId).name}。`);
+}
+
+function twinPerfectZilliax(game: GameState, seat: Seat, instanceId: string, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const source = game.players[seat].board.find((minion) => minion.instanceId === instanceId);
+  if (!source || occupiedBoardSlots(game.players[seat]) >= GAME_RULES.maxBoardSize) return;
+  const copy: BoardMinion = {
+    ...source,
+    instanceId: randomUUID(),
+    owner: seat,
+    summonedTurn: game.turn,
+    attacksThisTurn: 0,
+    exhausted: !source.keywords.includes("charge")
+  };
+  game.players[seat].board.push(copy);
+  addLog(game, `${sourceName} 召唤了一个复制。`);
+}
+
+function ignisWeapon(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!game.players[seat].forgedThisGame) {
+    addLog(game, `${sourceName} 检查后发现你本局还没有锻造过卡牌。`);
+    return;
+  }
+  const options = ["reno_choice_ignis_base_1", "reno_choice_ignis_base_5", "reno_choice_ignis_base_10"].map((cardId) => createInstance(cardId, seat));
+  beginChoice(game, seat, "ignis_base", "第一步：选择武器费用和基础身材。", options);
+}
+
+function chooseIgnisBase(game: GameState, seat: Seat, cardId: string, catalog: Map<string, CardDefinition>): void {
+  const base = IGNIS_BASE_OPTIONS[cardId];
+  if (!base) throw new Error("伊格尼斯基础武器选项无效。");
+  const options = randomCardIdOptions(game, seat, IGNIS_TRAIT_CARD_IDS, 3, "ignis_trait").map((id) => createInstance(id, seat));
+  beginChoice(game, seat, "ignis_trait", "第二步：从随机出现的三种武器特性中选择一种。", options, undefined, undefined, undefined, { ...base });
+}
+
+function chooseIgnisTrait(game: GameState, seat: Seat, cardId: string, weapon: IgnisWeaponData | undefined, catalog: Map<string, CardDefinition>): void {
+  if (!weapon) throw new Error("伊格尼斯武器缺少基础身材。");
+  const next: IgnisWeaponData = { ...weapon, keywords: weapon.keywords ? [...weapon.keywords] : [] };
+  if (cardId === "reno_choice_ignis_trait_poisonous") next.keywords = [...(next.keywords ?? []), "poisonous"];
+  if (cardId === "reno_choice_ignis_trait_lifesteal") next.keywords = [...(next.keywords ?? []), "lifesteal"];
+  if (cardId === "reno_choice_ignis_trait_windfury") next.keywords = [...(next.keywords ?? []), "windfury"];
+  if (cardId === "reno_choice_ignis_trait_adjacent") next.adjacentDamage = true;
+  if (cardId === "reno_choice_ignis_trait_immune") next.immuneWhileAttacking = true;
+  const options = randomCardIdOptions(game, seat, IGNIS_SPECIAL_CARD_IDS, 3, "ignis_special").map((id) => createInstance(id, seat));
+  beginChoice(game, seat, "ignis_special", "第三步：从随机出现的三种额外效果中选择一种。", options, undefined, undefined, undefined, next);
+}
+
+function chooseIgnisSpecial(game: GameState, seat: Seat, cardId: string, weapon: IgnisWeaponData | undefined, catalog: Map<string, CardDefinition>): void {
+  if (!weapon) throw new Error("伊格尼斯武器缺少前置选择。");
+  const tier = weapon.attack === 2 ? 0 : weapon.attack === 3 ? 1 : 2;
+  const summonCosts = [2, 4, 8];
+  const damage = [2, 4, 6];
+  const draws = [1, 2, 3];
+  const deathrattleDamage = [1, 2, 4];
+  const armor = [2, 4, 8];
+  const next: IgnisWeaponData = { ...weapon, keywords: weapon.keywords ? [...new Set(weapon.keywords)] : undefined };
+  let tokenCardId = "reno_token_ignis_weapon";
+  if (cardId === "reno_choice_ignis_special_summon") next.afterAttackSummonCost = summonCosts[tier];
+  if (cardId === "reno_choice_ignis_special_damage") {
+    next.battlecryDamage = damage[tier];
+    tokenCardId = "reno_token_ignis_weapon_battlecry";
+  }
+  if (cardId === "reno_choice_ignis_special_draw") next.afterAttackDraw = draws[tier];
+  if (cardId === "reno_choice_ignis_special_deathrattle") next.deathrattleAllEnemyDamage = deathrattleDamage[tier];
+  if (cardId === "reno_choice_ignis_special_armor") next.afterAttackArmor = armor[tier];
+  addCardToHand(game, seat, {
+    ...createInstance(tokenCardId, seat),
+    costOverride: tier === 0 ? 1 : tier === 1 ? 5 : 10,
+    attackOverride: next.attack,
+    healthOverride: next.durability,
+    ignisWeapon: next
+  }, catalog, "打造了一把自定义武器。");
+}
+
+function randomCardIdOptions(game: GameState, seat: Seat, source: string[], amount: number, salt: string): string[] {
+  const random = rng(game.seed + game.turn * 719 + seat * 151 + salt.length + source.length);
+  const pool = [...source];
+  const options: string[] = [];
+  while (pool.length > 0 && options.length < amount) {
+    const [picked] = pool.splice(Math.floor(random() * pool.length), 1);
+    options.push(picked);
+  }
+  return options;
+}
+
+function eliseBadlands(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  if (hasDuplicateCardIds(player.deck)) {
+    addLog(game, `${sourceName} 检查后发现牌库仍有重复牌。`);
+    return;
+  }
+  const minions = discoverInstanceOptions(game, seat, player.deck.filter((deckCard) => getCard(catalog, deckCard.cardId).type === "minion"), 4);
+  let summoned = 0;
+  for (const instance of minions) {
+    if (occupiedBoardSlots(player) >= GAME_RULES.maxBoardSize) break;
+    const card = getCard(catalog, instance.cardId);
+    const minion = createBoardMinion({ ...createInstance(instance.cardId, seat), attackOverride: 5, healthOverride: 5 }, card, game.turn);
+    player.board.push(minion);
+    summoned += 1;
+  }
+  addLog(game, `${sourceName} 召唤了 ${summoned} 个 5/5 复制。`);
+}
+
+function marinManager(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const options = ["reno_token_marin_wand", "reno_token_marin_crown", "reno_token_marin_goblet", "reno_token_marin_kobold"].map((cardId) => createInstance(cardId, seat));
+  beginChoice(game, seat, "discover_to_hand", `从 ${sourceName} 的奇妙宝藏中选择一件。`, options);
+}
+
+function marinWand(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  for (let count = 0; count < 3; count += 1) {
+    const drawn = player.deck.shift();
+    if (!drawn) {
+      drawCards(game, seat, 1, catalog, true);
+      continue;
+    }
+    countCeaselessEvent(game, "抽牌");
+    addCardToHand(game, seat, { ...drawn, drawnTurn: game.turn, costOverride: 1 }, catalog, `${sourceName} 抽到了 ${getCard(catalog, drawn.cardId).name}。`);
+  }
+}
+
+function marinCrown(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const legendary = randomLegendaryMinion(game, seat, catalog, sourceName);
+  if (!legendary) return;
+  summon(game, seat, legendary.id, 2, catalog);
+}
+
+function marinGoblet(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  const drawn = player.deck.shift();
+  if (!drawn) {
+    drawCards(game, seat, 1, catalog, true);
+    return;
+  }
+  countCeaselessEvent(game, "抽牌");
+  addCardToHand(game, seat, { ...drawn, drawnTurn: game.turn }, catalog, `${sourceName} 抽到了 ${getCard(catalog, drawn.cardId).name}。`);
+  while (player.hand.length < GAME_RULES.maxHandSize) addCardToHand(game, seat, createInstance(drawn.cardId, seat), catalog, `复制了 ${getCard(catalog, drawn.cardId).name}。`);
+}
+
+function marinGoldenKobold(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  player.graveyard.push(...player.hand.map((instance) => instance.cardId));
+  player.hand = [];
+  while (player.hand.length < GAME_RULES.maxHandSize) {
+    const legendary = randomLegendaryMinion(game, seat, catalog, sourceName);
+    if (!legendary) break;
+    addCardToHand(game, seat, { ...createInstance(legendary.id, seat), costOverride: Math.max(0, legendary.cost - 1) }, catalog, `获得了 ${legendary.name}。`);
+  }
+}
+
+function ceaselessExpanseBattlecry(game: GameState, seat: Seat, sourceInstanceId: string, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  for (const player of game.players) {
+    for (const minion of [...player.board]) {
+      if (player.seat === seat && minion.instanceId === sourceInstanceId) continue;
+      destroy(game, { type: "minion", seat: player.seat, instanceId: minion.instanceId }, catalog);
+    }
+  }
+  addLog(game, `${sourceName} 摧毁了所有其他随从。`);
+}
+
+function photographerFizzle(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const snapshotIds = game.players[seat].hand.map((instance) => instance.cardId);
+  const snapshot = { ...createInstance("reno_token_fizzle_snapshot", seat), storedCardIds: snapshotIds };
+  game.players[seat].deck.push(snapshot);
+  shuffle(game.players[seat].deck, rng(game.seed + game.turn * 691 + snapshotIds.length));
+  addLog(game, `${sourceName} 将 ${snapshotIds.length} 张手牌拍成快照并洗入牌库。`);
+}
+
+function fizzleSnapshot(game: GameState, seat: Seat, instance: CardInstance, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const stored = instance.storedCardIds ?? [];
+  for (const cardId of stored) addCardToHand(game, seat, createInstance(cardId, seat), catalog, `从 ${sourceName} 取回了 ${getCard(catalog, cardId).name}。`);
+}
+
+function kiljaedenPortal(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  player.deck = [];
+  player.kiljaedenPortal = { bonus: 0, demonCardIds: KILJAEDEN_DEMON_CARD_IDS.filter((cardId) => catalog.has(cardId)) };
+  refillKiljaedenPortalDeck(game, seat, catalog);
+  addLog(game, `${sourceName} 摧毁了牌库，并将其替换为无尽的恶魔传送门。`);
+}
+
+function beginKiljaedenPortalChoice(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
+  const player = game.players[seat];
+  if (!player.kiljaedenPortal) return;
+  player.kiljaedenPortal.bonus += 2;
+  buffKiljaedenDemons(player.hand, 2, catalog);
+  buffKiljaedenDemons(player.deck, 2, catalog);
+  refillKiljaedenPortalDeck(game, seat, catalog);
+  const options = discoverInstanceOptions(game, seat, player.deck.filter((instance) => instance.kiljaedenDemon), 3);
+  if (options.length === 0) return;
+  beginChoice(game, seat, "kiljaeden_demon", "从恶魔传送门中选择一个恶魔。", options);
+}
+
+function chooseKiljaedenDemon(game: GameState, seat: Seat, option: CardInstance, catalog: Map<string, CardDefinition>): void {
+  const player = game.players[seat];
+  const index = player.deck.findIndex((instance) => instance.instanceId === option.instanceId);
+  const picked = index >= 0 ? player.deck.splice(index, 1)[0] : option;
+  addCardToHand(game, seat, { ...picked, owner: seat }, catalog, `从恶魔传送门中选择了 ${getCard(catalog, picked.cardId).name}。`);
+  refillKiljaedenPortalDeck(game, seat, catalog);
+}
+
+function refillKiljaedenPortalDeck(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
+  const player = game.players[seat];
+  const portal = player.kiljaedenPortal;
+  if (!portal || portal.demonCardIds.length === 0) return;
+  const random = rng(game.seed + game.turn * 733 + seat * 167 + player.deck.length + portal.bonus);
+  while (player.deck.filter((instance) => instance.kiljaedenDemon).length < 30) {
+    const cardId = portal.demonCardIds[Math.floor(random() * portal.demonCardIds.length)];
+    const card = getCard(catalog, cardId);
+    player.deck.push({
+      ...createInstance(cardId, seat),
+      attackOverride: (card.attack ?? 0) + portal.bonus,
+      healthOverride: (card.health ?? 1) + portal.bonus,
+      kiljaedenDemon: true
+    });
+  }
+}
+
+function buffKiljaedenDemons(instances: CardInstance[], amount: number, catalog: Map<string, CardDefinition>): void {
+  for (const instance of instances) {
+    if (!instance.kiljaedenDemon) continue;
+    const card = getCard(catalog, instance.cardId);
+    instance.attackOverride = (instance.attackOverride ?? card.attack ?? 0) + amount;
+    instance.healthOverride = (instance.healthOverride ?? card.health ?? 1) + amount;
+  }
+}
+
+function beginAmanthulSecondExile(game: GameState, seat: Seat, sourceInstanceId: string | undefined, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion" || target.seat !== other(seat)) throw new Error(`${sourceName} 需要选择一个敌方随从。`);
+  const enemy = game.players[other(seat)];
+  const first = enemy.board.find((minion) => minion.instanceId === target.instanceId);
+  if (!first) throw new Error("阿曼苏尔的第一个目标已经离开战场。");
+  const secondOptions = enemy.board.filter((minion) => minion.instanceId !== first.instanceId);
+  if (secondOptions.length === 0) {
+    removeMinionWithoutDeathrattle(game, target, catalog, sourceName);
+    markTitanAbilityUsed(game, seat, sourceInstanceId, "reno_choice_amanthul_exile", catalog);
+    discoverLegendaryMinionToHand(game, seat, catalog, "阿曼苏尔");
+    delete game.pendingChoice;
+    cleanupDeaths(game, catalog);
+    return;
+  }
+  beginChoice(game, seat, "amanthul_second_enemy", "选择第二个敌方随从，将两个目标移出对战。", secondOptions, first.instanceId, sourceInstanceId);
+}
+
+function resolveAmanthulSecondExile(game: GameState, seat: Seat, firstInstanceId: string | undefined, secondInstanceId: string, sourceInstanceId: string | undefined, catalog: Map<string, CardDefinition>): void {
+  const enemySeat = other(seat);
+  if (firstInstanceId) removeMinionWithoutDeathrattle(game, { type: "minion", seat: enemySeat, instanceId: firstInstanceId }, catalog, "阿曼苏尔");
+  removeMinionWithoutDeathrattle(game, { type: "minion", seat: enemySeat, instanceId: secondInstanceId }, catalog, "阿曼苏尔");
+  markTitanAbilityUsed(game, seat, sourceInstanceId, "reno_choice_amanthul_exile", catalog);
+  discoverLegendaryMinionToHand(game, seat, catalog, "阿曼苏尔");
+}
+
+function amanthulCopy(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion") throw new Error(`${sourceName} 需要选择一个非泰坦随从。`);
+  const targetMinion = findMinion(game, target);
+  if (!targetMinion) throw new Error("阿曼苏尔的复制目标已经离开战场。");
+  if (titanAbilityIds(getCard(catalog, targetMinion.cardId)).length > 0) throw new Error(`${sourceName} 不能选择泰坦随从。`);
+  const player = game.players[seat];
+  if (occupiedBoardSlots(player) >= GAME_RULES.maxBoardSize) throw new Error("己方战场已满。");
+  const card = getCard(catalog, targetMinion.cardId);
+  const copy = createBoardMinion({
+    ...createInstance(targetMinion.cardId, seat),
+    attackOverride: targetMinion.attack + 2,
+    healthOverride: targetMinion.maxHealth + 2
+  }, card, game.turn);
+  player.board.push(copy);
+  addLog(game, `${sourceName} 召唤了 ${card.name} 的 +2/+2 复制。`);
+}
+
+function amanthulSummon(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  if (occupiedBoardSlots(player) >= GAME_RULES.maxBoardSize) throw new Error("己方战场已满。");
+  const pool = [...catalog.values()].filter((card) => card.collectible && card.type === "minion" && card.cost === 6);
+  if (pool.length === 0) {
+    addLog(game, `${sourceName} 没有找到可召唤的 6 费随从。`);
+    return;
+  }
+  const random = rng(game.seed + game.turn * 709 + seat * 137 + pool.length);
+  const card = pool[Math.floor(random() * pool.length)];
+  const minion = createBoardMinion(createInstance(card.id, seat), card, game.turn);
+  addKeyword(minion, "taunt");
+  addKeyword(minion, "lifesteal");
+  player.board.push(minion);
+  addLog(game, `${sourceName} 召唤了具有嘲讽和吸血的 ${card.name}。`);
+}
+
+function buffMinionsInHand(game: GameState, seat: Seat, attack: number, health: number, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  let count = 0;
+  for (const instance of game.players[seat].hand) {
+    const card = getCard(catalog, instance.cardId);
+    if (card.type !== "minion") continue;
+    instance.attackOverride = (instance.attackOverride ?? card.attack ?? 0) + attack;
+    instance.healthOverride = (instance.healthOverride ?? card.health ?? 1) + health;
+    count += 1;
+  }
+  addLog(game, `${sourceName} 强化了手牌中的 ${count} 个随从。`);
+}
+
+function yoggMindControl(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion" || target.seat !== other(seat)) throw new Error(`${sourceName} 需要选择一个敌方随从。`);
+  const enemy = game.players[target.seat];
+  if (occupiedBoardSlots(game.players[seat]) >= GAME_RULES.maxBoardSize) throw new Error("己方战场已满。");
+  const index = enemy.board.findIndex((minion) => minion.instanceId === target.instanceId);
+  if (index < 0) throw new Error("尤格-萨隆的目标已经离开战场。");
+  const [stolen] = enemy.board.splice(index, 1);
+  stolen.owner = seat;
+  delete stolen.titanAbilityUsedTurn;
+  if (titanHasRemainingAbilities(stolen, catalog)) stolen.cannotAttack = true;
+  game.players[seat].board.push(stolen);
+  addLog(game, `${sourceName} 夺取了 ${getCard(catalog, stolen.cardId).name}。`);
+}
+
+function yoggTendrils(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  let count = 0;
+  while (game.players[seat].hand.length < GAME_RULES.maxHandSize) {
+    addCardToHand(game, seat, createInstance("reno_token_chaotic_tendril", seat), catalog, "获得了混乱触须。");
+    count += 1;
+  }
+  addLog(game, `${sourceName} 填充了 ${count} 张混乱触须。`);
+}
+
+function yoggMadness(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const enemySeat = other(seat);
+  const board = [...game.players[enemySeat].board];
+  for (const attacker of board) {
+    if (!findMinion(game, { type: "minion", seat: enemySeat, instanceId: attacker.instanceId })) continue;
+    const defenders = game.players[enemySeat].board.filter((minion) => minion.instanceId !== attacker.instanceId);
+    if (defenders.length === 0) break;
+    const random = rng(game.seed + game.turn * 727 + attacker.instanceId.length);
+    const defender = defenders[Math.floor(random() * defenders.length)];
+    dealDamage(game, { type: "minion", seat: enemySeat, instanceId: defender.instanceId }, attacker.attack, enemySeat, catalog, attacker.keywords.includes("lifesteal"));
+    dealDamage(game, { type: "minion", seat: enemySeat, instanceId: attacker.instanceId }, defender.attack, enemySeat, catalog, defender.keywords.includes("lifesteal"));
+    cleanupDeaths(game, catalog);
+  }
+  addLog(game, `${sourceName} 让敌方随从陷入狂乱。`);
+}
+
+function yoggRandomSpells(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  dealRandomEnemyDamage(game, seat, 2, catalog, sourceName);
+  drawCards(game, seat, 1, catalog, true);
+  addLog(game, `${sourceName} 额外施放了两个随机法术。`);
+}
+
+function addRandomLegendaryMinionToHand(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const picked = randomLegendaryMinion(game, seat, catalog, sourceName);
+  if (picked) addCardToHand(game, seat, createInstance(picked.id, seat), catalog, `${sourceName} 发现了 ${picked.name}。`);
+}
+
+function discoverLegendaryMinionToHand(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  addRandomLegendaryMinionToHand(game, seat, catalog, sourceName);
+}
+
+function randomLegendaryMinion(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): CardDefinition | undefined {
+  const pool = [...catalog.values()].filter((card) => card.collectible && card.type === "minion" && card.rarity === "legendary");
+  if (pool.length === 0) {
+    addLog(game, `${sourceName} 没有找到传说随从。`);
+    return undefined;
+  }
+  const random = rng(game.seed + game.turn * 743 + seat * 113 + pool.length + game.logs.length);
+  return pool[Math.floor(random() * pool.length)];
+}
+
+function copyMinionAsCard(minion: BoardMinion, seat: Seat): CardInstance {
+  return {
+    ...createInstance(minion.cardId, seat),
+    attackOverride: minion.attack,
+    healthOverride: minion.maxHealth
+  };
+}
+
+function cloneGeneratedChoiceOption(option: CardInstance, seat: Seat): CardInstance {
+  return {
+    ...createInstance(option.cardId, seat),
+    costOverride: option.costOverride,
+    attackOverride: option.attackOverride,
+    healthOverride: option.healthOverride,
+    remainingUses: option.remainingUses,
+    forged: option.forged,
+    storedCardIds: option.storedCardIds ? [...option.storedCardIds] : undefined,
+    ignisWeapon: option.ignisWeapon ? { ...option.ignisWeapon, keywords: option.ignisWeapon.keywords ? [...option.ignisWeapon.keywords] : undefined } : undefined,
+    kiljaedenDemon: option.kiljaedenDemon
+  };
+}
+
+function findAnyBoardMinion(game: GameState, instanceId: string): { seat: Seat; minion: BoardMinion } | undefined {
+  for (const player of game.players) {
+    const minion = player.board.find((item) => item.instanceId === instanceId);
+    if (minion) return { seat: player.seat, minion };
+  }
+  return undefined;
+}
+
+function removeMinionWithoutDeathrattle(game: GameState, target: TargetRef, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (target.type !== "minion" || !target.instanceId) throw new Error(`${sourceName} 需要选择一个随从。`);
+  const player = game.players[target.seat];
+  const index = player.board.findIndex((minion) => minion.instanceId === target.instanceId);
+  if (index < 0) return;
+  const [removed] = player.board.splice(index, 1);
+  player.graveyard.push(removed.cardId);
+  countCeaselessEvent(game, "随从被移出对战");
+  addLog(game, `${sourceName} 将 ${getCard(catalog, removed.cardId).name} 移出了对战。`);
+}
+
 function copyRandomHandCard(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
   copyRandomCards(game, seat, game.players[other(seat)].hand, 1, catalog, `${sourceName} 夺取了复制`);
 }
@@ -1205,6 +2030,8 @@ function borrowEnemyMinion(game: GameState, seat: Seat, target: TargetRef | unde
   if (targetIndex < 0 || !najark) throw new Error("夺取目标已经离开战场。");
   const [borrowed] = enemy.board.splice(targetIndex, 1);
   borrowed.owner = seat;
+  delete borrowed.titanAbilityUsedTurn;
+  if (titanHasRemainingAbilities(borrowed, catalog)) borrowed.cannotAttack = true;
   borrowed.borrowedFromSeat = enemy.seat;
   borrowed.borrowedByInstanceId = najark.instanceId;
   owner.board.push(borrowed);
@@ -1212,7 +2039,9 @@ function borrowEnemyMinion(game: GameState, seat: Seat, target: TargetRef | unde
 }
 
 function clearEnemyBoard(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
-  for (const minion of [...game.players[other(seat)].board]) destroy(game, { type: "minion", seat: other(seat), instanceId: minion.instanceId }, catalog);
+  for (const minion of [...game.players[other(seat)].board]) {
+    removeMinionWithoutDeathrattle(game, { type: "minion", seat: other(seat), instanceId: minion.instanceId }, catalog, sourceName);
+  }
   addLog(game, `${sourceName} 清理了敌方战场。`);
 }
 
@@ -1394,23 +2223,30 @@ function attack(game: GameState, actorSeat: Seat, source: TargetRef, target: Tar
     const weapon = player.hero.weapon;
     const heroAttack = (weapon?.attack ?? 0) + player.hero.temporaryAttack;
     if (heroAttack <= 0) throw new Error("英雄没有可用攻击力。");
-    if (player.hero.attacksThisTurn > 0) throw new Error("英雄本回合已经攻击过。");
-    dealDamage(game, target, heroAttack, actorSeat, catalog, false);
+    const heroAttackLimit = weapon?.keywords?.includes("windfury") ? 2 : 1;
+    if (player.hero.attacksThisTurn >= heroAttackLimit) throw new Error("英雄本回合已经攻击过。");
     const defender = getTarget(game, target);
-    if (defender.kind === "minion") dealDamage(game, source, defender.minion.attack, target.seat, catalog, false);
+    const adjacentTargets = weapon?.ignisWeapon?.adjacentDamage && target.type === "minion"
+      ? adjacentMinionTargets(game, target)
+      : [];
+    dealDamage(game, target, heroAttack, actorSeat, catalog, Boolean(weapon?.keywords?.includes("lifesteal")));
+    if (weapon?.keywords?.includes("poisonous") && target.type === "minion") {
+      const poisoned = findMinion(game, target);
+      if (poisoned) poisoned.health = 0;
+    }
+    for (const adjacent of adjacentTargets) dealDamage(game, adjacent, heroAttack, actorSeat, catalog, Boolean(weapon?.keywords?.includes("lifesteal")));
+    if (defender.kind === "minion" && !weapon?.ignisWeapon?.immuneWhileAttacking) dealDamage(game, source, defender.minion.attack, target.seat, catalog, false);
     player.hero.attacksThisTurn += 1;
+    resolveWeaponAfterAttack(game, actorSeat, catalog);
     if (weapon) {
       weapon.durability -= 1;
-      if (weapon.durability <= 0) {
-        player.graveyard.push(weapon.cardId);
-        delete player.hero.weapon;
-      }
+      if (weapon.durability <= 0) destroyHeroWeapon(game, actorSeat, catalog, weapon.cardId);
     }
     addLog(game, `${player.nickname} 的英雄发起攻击。`);
   } else {
     const minion = findMinion(game, source);
     if (!minion) throw new Error("攻击者不存在。");
-    if (!canMinionAttack(minion, target, game.turn)) throw new Error("该随从现在不能攻击。");
+    if (!canMinionAttack(minion, target, game.turn, catalog)) throw new Error("该随从现在不能攻击。");
     const defender = getTarget(game, target);
     dealDamage(game, target, minion.attack, actorSeat, catalog, minion.keywords.includes("lifesteal"));
     if (defender.kind === "minion") {
@@ -1420,6 +2256,47 @@ function attack(game: GameState, actorSeat: Seat, source: TargetRef, target: Tar
     addLog(game, `${game.players[actorSeat].nickname} 使用 ${getCard(catalog, minion.cardId).name} 发起攻击。`);
   }
   cleanupDeaths(game, catalog);
+}
+
+function adjacentMinionTargets(game: GameState, target: TargetRef): TargetRef[] {
+  if (target.type !== "minion" || target.instanceId === undefined) return [];
+  const board = game.players[target.seat].board;
+  const index = board.findIndex((minion) => minion.instanceId === target.instanceId);
+  if (index < 0) return [];
+  return [board[index - 1], board[index + 1]]
+    .filter(Boolean)
+    .map((minion) => ({ type: "minion" as const, seat: target.seat, instanceId: minion.instanceId }));
+}
+
+function resolveWeaponAfterAttack(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
+  const weapon = game.players[seat].hero.weapon;
+  const ignis = weapon?.ignisWeapon;
+  if (!weapon || !ignis) return;
+  if (ignis.afterAttackSummonCost) summonRandomCostMinion(game, seat, ignis.afterAttackSummonCost, catalog, "伊格尼斯的武器");
+  if (ignis.afterAttackDraw) drawCards(game, seat, ignis.afterAttackDraw, catalog, true);
+  if (ignis.afterAttackArmor) game.players[seat].hero.armor += ignis.afterAttackArmor;
+}
+
+function summonRandomCostMinion(game: GameState, seat: Seat, cost: number, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const minions = [...catalog.values()].filter((card) => card.collectible && card.type === "minion" && card.cost === cost);
+  if (minions.length === 0) return;
+  const random = rng(game.seed + game.turn * 811 + seat * 163 + cost * 17 + minions.length);
+  summon(game, seat, minions[Math.floor(random() * minions.length)].id, 1, catalog);
+  addLog(game, `${sourceName} 召唤了一个 ${cost} 费随从。`);
+}
+
+function destroyHeroWeapon(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  const weapon = player.hero.weapon;
+  if (!weapon) return;
+  const deathrattleDamage = weapon.ignisWeapon?.deathrattleAllEnemyDamage;
+  player.graveyard.push(weapon.cardId);
+  delete player.hero.weapon;
+  if (deathrattleDamage) {
+    const targets = [{ type: "hero" as const, seat: other(seat) }, ...game.players[other(seat)].board.map((minion) => ({ type: "minion" as const, seat: other(seat), instanceId: minion.instanceId }))];
+    for (const target of targets) dealDamage(game, target, deathrattleDamage, seat, catalog, Boolean(weapon.keywords?.includes("lifesteal")));
+    addLog(game, `${sourceName} 触发武器亡语，对所有敌人造成 ${deathrattleDamage} 点伤害。`);
+  }
 }
 
 function endTurn(game: GameState, catalog: Map<string, CardDefinition>): void {
@@ -1440,12 +2317,14 @@ function startTurn(game: GameState, seat: Seat, catalog: Map<string, CardDefinit
   player.hero.temporaryAttack = 0;
   rollRenoBullet(game, seat, catalog);
   tickAvianaCountdown(game, seat);
-  resolveStartTurnRules(game, seat, catalog);
+  transformChameleosInHand(game, seat, catalog);
+  transformHarmonicPopInHand(game, seat);
+  const skipDraw = resolveStartTurnRules(game, seat, catalog);
   for (const minion of player.board) {
     minion.exhausted = false;
     minion.attacksThisTurn = 0;
   }
-  drawCards(game, seat, 1, catalog, true);
+  if (!skipDraw) drawCards(game, seat, 1, catalog, true);
   addLog(game, `第 ${game.turn} 回合开始，轮到 ${player.nickname}。`);
 }
 
@@ -1469,14 +2348,19 @@ function resolveEndTurnRules(game: GameState, seat: Seat, catalog: Map<string, C
   }
 }
 
-function resolveStartTurnRules(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
-  if (game.pendingChoice) return;
+function resolveStartTurnRules(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): boolean {
+  if (game.pendingChoice) return false;
+  if (game.players[seat].kiljaedenPortal) {
+    beginKiljaedenPortalChoice(game, seat, catalog);
+    return true;
+  }
   for (const minion of game.players[seat].board) {
     if (!minion.silenced && hasRule(getCard(catalog, minion.cardId), "dragon_pure_nest")) {
       discoverDragon(game, seat, catalog, "纯净龙巢", -4, ["dragon_rheastrasza"]);
-      return;
+      return false;
     }
   }
+  return false;
 }
 
 function expireTurnEffects(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
@@ -1526,6 +2410,7 @@ function applyEffects(game: GameState, context: EffectContext, catalog: Map<stri
     }
     if (effect.type === "equip_weapon") {
       const player = game.players[context.sourceOwner];
+      if (player.hero.weapon) destroyHeroWeapon(game, context.sourceOwner, catalog, context.sourceCard.name);
       player.hero.weapon = { cardId: context.sourceCard.id, attack: effect.attack, durability: effect.durability };
       addLog(game, `${player.nickname} 装备了 ${effect.attack}/${effect.durability} 武器。`);
       continue;
@@ -1579,13 +2464,48 @@ function drawCards(game: GameState, seat: Seat, amount: number, catalog: Map<str
       if (withLog) addLog(game, `${player.nickname} 疲劳并受到 ${player.fatigue} 点伤害。`);
       continue;
     }
+    countCeaselessEvent(game, "抽牌");
     if (player.hand.length >= GAME_RULES.maxHandSize) {
       player.graveyard.push(drawn.cardId);
+      countCeaselessEvent(game, "卡牌被摧毁");
       if (withLog) addLog(game, `${getCard(catalog, drawn.cardId).name} 因手牌已满被弃置。`);
     } else {
-      player.hand.push({ ...drawn, drawnTurn: game.turn });
+      const handCard = { ...drawn, drawnTurn: game.turn };
+      if (handCard.cardId === "reno_priest_chameleos") handCard.chameleos = true;
+      player.hand.push(handCard);
       if (withLog) addLog(game, `${player.nickname} 抽了一张牌。`);
     }
+  }
+}
+
+function transformChameleosInHand(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
+  const player = game.players[seat];
+  const enemyHand = game.players[other(seat)].hand;
+  for (const instance of player.hand) {
+    if (!instance.chameleos) continue;
+    if (enemyHand.length === 0) {
+      instance.cardId = "reno_priest_chameleos";
+      delete instance.costOverride;
+      delete instance.attackOverride;
+      delete instance.healthOverride;
+      continue;
+    }
+    const random = rng(game.seed + game.turn * 761 + seat * 127 + instance.instanceId.length + enemyHand.length);
+    const copied = enemyHand[Math.floor(random() * enemyHand.length)];
+    const copiedCard = getCard(catalog, copied.cardId);
+    instance.cardId = copied.cardId;
+    instance.costOverride = copied.costOverride ?? copiedCard.cost;
+    instance.attackOverride = copied.attackOverride;
+    instance.healthOverride = copied.healthOverride;
+    instance.storedCardIds = copied.storedCardIds ? [...copied.storedCardIds] : undefined;
+    addLog(game, `变色龙卡米洛斯变成了 ${copiedCard.name}。`);
+  }
+}
+
+function transformHarmonicPopInHand(game: GameState, seat: Seat): void {
+  for (const instance of game.players[seat].hand) {
+    if (instance.cardId === "reno_priest_harmonic_pop") instance.cardId = "reno_token_dissonant_pop";
+    else if (instance.cardId === "reno_token_dissonant_pop") instance.cardId = "reno_priest_harmonic_pop";
   }
 }
 
@@ -1697,6 +2617,7 @@ function cleanupDeaths(game: GameState, catalog: Map<string, CardDefinition>): v
       for (const minion of dead) {
         const card = getCard(catalog, minion.cardId);
         player.graveyard.push(card.id);
+        countCeaselessEvent(game, "随从被摧毁");
         addLog(game, `${card.name} 被消灭。`);
         if (!minion.silenced && hasRule(card, "priest_najark")) returnBorrowedMinions(game, minion.instanceId, catalog);
         if (!minion.silenced) applyEffects(game, { sourceCard: card, sourceOwner: player.seat, trigger: "deathrattle" }, catalog);
@@ -1717,7 +2638,33 @@ function enforceTaunt(game: GameState, attackerSeat: Seat, target: TargetRef): v
   if (!minion?.keywords.includes("taunt")) throw new Error("必须优先攻击具有嘲讽的随从。");
 }
 
-function canMinionAttack(minion: BoardMinion, target: TargetRef, turn: number): boolean {
+function titanAbilityIds(card: CardDefinition): string[] {
+  if (card.titanAbilityCardIds?.length) return card.titanAbilityCardIds;
+  if (card.races?.includes("TITAN") && card.choiceOptionCardIds?.length) return card.choiceOptionCardIds;
+  return [];
+}
+
+function remainingTitanAbilityIds(minion: BoardMinion, card: CardDefinition): string[] {
+  const used = new Set(minion.usedTitanAbilityCardIds ?? []);
+  return titanAbilityIds(card).filter((cardId) => !used.has(cardId));
+}
+
+function titanHasRemainingAbilities(minion: BoardMinion, catalog: Map<string, CardDefinition>): boolean {
+  if (minion.silenced) return false;
+  return remainingTitanAbilityIds(minion, getCard(catalog, minion.cardId)).length > 0;
+}
+
+function markTitanAbilityUsed(game: GameState, seat: Seat, sourceInstanceId: string | undefined, abilityCardId: string, catalog: Map<string, CardDefinition>): void {
+  if (!sourceInstanceId) return;
+  const source = game.players[seat].board.find((minion) => minion.instanceId === sourceInstanceId);
+  if (!source) return;
+  source.usedTitanAbilityCardIds = [...new Set([...(source.usedTitanAbilityCardIds ?? []), abilityCardId])];
+  source.titanAbilityUsedTurn = game.turn;
+  if (!titanHasRemainingAbilities(source, catalog)) source.cannotAttack = false;
+}
+
+function canMinionAttack(minion: BoardMinion, target: TargetRef, turn: number, catalog: Map<string, CardDefinition>): boolean {
+  if (titanHasRemainingAbilities(minion, catalog)) return false;
   if (minion.cannotAttack) return false;
   if ((minion.frozenUntilTurn ?? -1) >= turn) return false;
   if (minion.attack <= 0) return false;
@@ -1744,6 +2691,7 @@ function createBoardMinion(instance: CardInstance, card: CardDefinition, turn: n
   const attack = instance.attackOverride ?? card.attack ?? 0;
   const health = instance.healthOverride ?? card.health ?? 1;
   const isPureNest = hasRule(card, "dragon_pure_nest");
+  const isTitan = titanAbilityIds(card).length > 0;
   return {
     ...instance,
     attack,
@@ -1755,7 +2703,7 @@ function createBoardMinion(instance: CardInstance, card: CardDefinition, turn: n
     attacksThisTurn: 0,
     silenced: false,
     temporaryAttack: 0,
-    cannotAttack: hasRule(card, "ragnaros") || isPureNest,
+    cannotAttack: hasRule(card, "ragnaros") || isPureNest || isTitan,
     untouchable: isPureNest
   };
 }
@@ -1773,7 +2721,13 @@ function occupiedBoardSlots(player: PlayerGameState): number {
 }
 
 function createInstance(cardId: string, owner: Seat, origin: CardInstance["origin"] = "generated"): CardInstance {
-  return { cardId, owner, origin, instanceId: randomUUID() };
+  return {
+    cardId,
+    owner,
+    origin,
+    instanceId: randomUUID(),
+    chameleos: cardId === "reno_priest_chameleos" ? true : undefined
+  };
 }
 
 function catalogFrom(cards: CardDefinition[]): Map<string, CardDefinition> {
@@ -1835,11 +2789,14 @@ function cardPlayCost(game: GameState, seat: Seat, instance: CardInstance, card:
     : 0;
   const player = game.players[seat];
   const printedOrOverriddenCost = instance.costOverride ?? card.cost;
+  const dynamicCost = hasRule(card, "priest_ceaseless_expanse")
+    ? Math.max(0, printedOrOverriddenCost - (game.ceaselessEvents ?? 0))
+    : printedOrOverriddenCost;
   const baseCost = player.avianaActive
-    ? Math.min(printedOrOverriddenCost, 1)
+    ? Math.min(dynamicCost, 1)
     : card.type === "minion" && player.board.some((minion) => !minion.silenced && hasRule(getCard(catalog, minion.cardId), "dragon_aviana"))
       ? 1
-      : printedOrOverriddenCost;
+      : dynamicCost;
   const cost = baseCost + tax;
   return opponentHasRuleOnBoard(game, seat, "razorscale", catalog) ? Math.max(cost, 2) : cost;
 }

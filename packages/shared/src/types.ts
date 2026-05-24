@@ -29,6 +29,7 @@ export type Keyword =
   | "deathrattle"
   | "battlecry"
   | "windfury"
+  | "poisonous"
   | "spell_damage";
 
 export type CardRuleTag =
@@ -53,10 +54,17 @@ export type CardRuleTag =
   | "ancient_war_attack"
   | "ancient_war_taunt"
   | "priest_raise_dead"
+  | "priest_chameleos"
+  | "priest_mend"
+  | "priest_power_word_barrier"
+  | "priest_creation_protocol"
   | "priest_finley"
   | "priest_zephrys"
   | "priest_kaldorei_spirit"
   | "priest_identity_theft"
+  | "priest_thoughtsteal"
+  | "priest_shadow_word_death"
+  | "priest_power_chord_synchronize"
   | "priest_illucia"
   | "priest_mixologist"
   | "priest_hysteria"
@@ -67,17 +75,49 @@ export type CardRuleTag =
   | "priest_lone_ranger_reno"
   | "priest_psychic_conjurer"
   | "priest_serena"
+  | "priest_cozy_voljin"
   | "priest_cult_neophyte"
   | "priest_papercraft_angel"
   | "priest_lazul"
+  | "priest_zola"
   | "priest_harvester"
   | "priest_holmes"
   | "priest_banker"
+  | "priest_twilight_torrent"
+  | "priest_nameless_one"
   | "priest_puppet_theatre"
+  | "priest_glowstone_gyreworm"
   | "priest_najark"
+  | "priest_mind_control_tech"
+  | "priest_shadow_word_ruin"
+  | "priest_repackage"
+  | "priest_repackaged_box"
+  | "priest_zilliax_twin_perfect"
+  | "priest_ignis"
+  | "priest_ignis_weapon"
   | "priest_loatheb"
   | "priest_benedictus"
   | "priest_spawn_of_shadows"
+  | "priest_dragonfire_potion"
+  | "priest_harmonic_pop"
+  | "priest_dissonant_pop"
+  | "priest_lightbomb"
+  | "priest_elise_badlands"
+  | "priest_marin_manager"
+  | "priest_amanthul_copy"
+  | "priest_amanthul_exile"
+  | "priest_amanthul_summon"
+  | "priest_amanthul_legend"
+  | "priest_amanthul_handbuff"
+  | "priest_yogg_control"
+  | "priest_yogg_tendrils"
+  | "priest_yogg_madness"
+  | "priest_yogg_unleashed"
+  | "priest_ceaseless_expanse"
+  | "priest_ysera_emerald"
+  | "priest_fizzle"
+  | "priest_fizzle_snapshot"
+  | "priest_kiljaeden"
   | "priest_shadowreaper"
   | "priest_aviana"
   | "priest_reno_holy_bullet"
@@ -176,6 +216,8 @@ export interface CardDefinition {
   races?: string[];
   requiresTarget?: boolean;
   choiceOptionCardIds?: string[];
+  titanAbilityCardIds?: string[];
+  forgeable?: boolean;
   deckRules?: {
     deckSize?: number;
     startingHealth?: number;
@@ -263,9 +305,14 @@ export interface CardInstance {
   attackOverride?: number;
   healthOverride?: number;
   remainingUses?: number;
+  forged?: boolean;
   moonlitOriginalInstanceId?: string;
   moonlitDrawTurn?: number;
   isFloopCopy?: boolean;
+  chameleos?: boolean;
+  storedCardIds?: string[];
+  ignisWeapon?: IgnisWeaponData;
+  kiljaedenDemon?: boolean;
 }
 
 export interface BoardMinion extends CardInstance {
@@ -285,6 +332,8 @@ export interface BoardMinion extends CardInstance {
   counterNextCardType?: "minion" | "spell";
   borrowedByInstanceId?: string;
   borrowedFromSeat?: Seat;
+  usedTitanAbilityCardIds?: string[];
+  titanAbilityUsedTurn?: number;
 }
 
 export interface BoardLocation extends CardInstance {
@@ -296,6 +345,21 @@ export interface WeaponState {
   cardId: string;
   attack: number;
   durability: number;
+  keywords?: Keyword[];
+  ignisWeapon?: IgnisWeaponData;
+}
+
+export interface IgnisWeaponData {
+  attack: number;
+  durability: number;
+  keywords?: Keyword[];
+  adjacentDamage?: boolean;
+  immuneWhileAttacking?: boolean;
+  afterAttackSummonCost?: number;
+  afterAttackDraw?: number;
+  afterAttackArmor?: number;
+  battlecryDamage?: number;
+  deathrattleAllEnemyDamage?: number;
 }
 
 export interface HeroState {
@@ -332,6 +396,12 @@ export interface PlayerGameState {
   };
   avianaCountdown?: number;
   avianaActive?: boolean;
+  spellsCastThisGame?: number;
+  forgedThisGame?: boolean;
+  kiljaedenPortal?: {
+    bonus: number;
+    demonCardIds: string[];
+  };
 }
 
 export interface PublicCardInstance {
@@ -344,6 +414,7 @@ export interface PublicCardInstance {
   attackOverride?: number;
   healthOverride?: number;
   remainingUses?: number;
+  forged?: boolean;
 }
 
 export interface PublicPlayerGameState extends Omit<PlayerGameState, "deck" | "hand" | "sideboard"> {
@@ -367,6 +438,13 @@ export type PendingChoiceKind =
   | "copy_enemy_hand"
   | "discover_to_hand"
   | "card_choice"
+  | "titan_ability"
+  | "amanthul_second_enemy"
+  | "kiljaeden_demon"
+  | "ignis_base"
+  | "ignis_trait"
+  | "ignis_special"
+  | "voljin_second_minion"
   | "dragon_aquatic_form"
   | "dragon_wave_shaper"
   | "dragon_moonlit_guidance";
@@ -379,6 +457,8 @@ export interface PendingChoice {
   options: CardInstance[];
   chosenFriendlyInstanceId?: string;
   sourceInstanceId?: string;
+  copiesToAdd?: number;
+  ignisWeapon?: IgnisWeaponData;
 }
 
 export interface PublicPendingChoice extends Omit<PendingChoice, "options"> {
@@ -396,6 +476,7 @@ export interface GameState {
   players: [PlayerGameState, PlayerGameState];
   pendingChoice?: PendingChoice;
   logs: GameLogEntry[];
+  ceaselessEvents?: number;
 }
 
 export interface PublicGameState extends Omit<GameState, "players" | "pendingChoice"> {
@@ -407,7 +488,9 @@ export interface PublicGameState extends Omit<GameState, "players" | "pendingCho
 export type GameAction =
   | { type: "mulligan"; cardInstanceIds: string[] }
   | { type: "play_card"; handInstanceId: string; target?: TargetRef }
+  | { type: "forge_card"; handInstanceId: string }
   | { type: "use_location"; locationInstanceId: string; target?: TargetRef }
+  | { type: "use_titan_ability"; minionInstanceId: string }
   | { type: "choose"; choiceId: string; optionInstanceId: string; target?: TargetRef }
   | { type: "attack"; source: TargetRef; target: TargetRef }
   | { type: "hero_power"; target?: TargetRef }

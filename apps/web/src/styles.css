@@ -719,7 +719,26 @@ p {
   left: 9px;
 }
 
-.hand-row .card-tile {
+.hand-row .hand-card-shell {
+  width: 152px;
+  height: 214px;
+  flex: 0 0 152px;
+  margin-left: -18px;
+  transform-origin: bottom center;
+  position: relative;
+}
+
+.hand-row .hand-card-shell .card-tile {
+  width: 100%;
+  height: 100%;
+  margin-left: 0;
+}
+
+.hand-row .hand-card-shell:hover {
+  z-index: 120 !important;
+}
+
+.hand-row > .card-tile {
   width: 152px;
   height: 214px;
   flex: 0 0 152px;
@@ -727,9 +746,39 @@ p {
   transform-origin: bottom center;
 }
 
-.hand-row .card-tile:hover:not(:disabled) {
+.hand-row .hand-card-shell:hover .card-tile:not(:disabled),
+.hand-row > .card-tile:hover:not(:disabled) {
   transform: translateY(-44px) scale(1.13) !important;
   z-index: 100 !important;
+}
+
+.forge-button {
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  bottom: -34px;
+  z-index: 120;
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+  justify-content: center;
+}
+
+.forge-button svg {
+  flex: 0 0 auto;
+}
+
+.forged-mark {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: rgba(238, 203, 126, 0.86);
+  color: #2b2012;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 900;
 }
 
 .mulligan-panel {
@@ -1304,7 +1353,13 @@ p {
     padding-left: 22px;
   }
 
-  .hand-row .card-tile {
+  .hand-row .hand-card-shell {
+    width: 138px;
+    height: 198px;
+    flex-basis: 138px;
+  }
+
+  .hand-row > .card-tile {
     width: 138px;
     height: 198px;
     flex-basis: 138px;

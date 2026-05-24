@@ -341,6 +341,11 @@ export interface BoardLocation extends CardInstance {
   readyTurn: number;
 }
 
+export interface BoardSpecial extends CardInstance {
+  bonus?: number;
+  demonCardIds?: string[];
+}
+
 export interface WeaponState {
   cardId: string;
   attack: number;
@@ -384,6 +389,7 @@ export interface PlayerGameState {
   sideboard: CardInstance[];
   board: BoardMinion[];
   locations: BoardLocation[];
+  specials: BoardSpecial[];
   graveyard: string[];
   maxMana: number;
   manaCap?: number;
@@ -459,6 +465,14 @@ export interface PendingChoice {
   sourceInstanceId?: string;
   copiesToAdd?: number;
   ignisWeapon?: IgnisWeaponData;
+  continuesStartTurn?: boolean;
+}
+
+export interface StartTurnQueue {
+  seat: Seat;
+  effects: string[];
+  index: number;
+  drawAfter?: boolean;
 }
 
 export interface PublicPendingChoice extends Omit<PendingChoice, "options"> {
@@ -477,6 +491,8 @@ export interface GameState {
   pendingChoice?: PendingChoice;
   logs: GameLogEntry[];
   ceaselessEvents?: number;
+  ceaselessTrackingStarted?: boolean;
+  startTurnQueue?: StartTurnQueue;
 }
 
 export interface PublicGameState extends Omit<GameState, "players" | "pendingChoice"> {
@@ -491,6 +507,7 @@ export type GameAction =
   | { type: "forge_card"; handInstanceId: string }
   | { type: "use_location"; locationInstanceId: string; target?: TargetRef }
   | { type: "use_titan_ability"; minionInstanceId: string }
+  | { type: "cancel_choice"; choiceId: string }
   | { type: "choose"; choiceId: string; optionInstanceId: string; target?: TargetRef }
   | { type: "attack"; source: TargetRef; target: TargetRef }
   | { type: "hero_power"; target?: TargetRef }

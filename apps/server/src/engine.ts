@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { GAME_RULES, cardNeedsTarget, type BoardLocation, type BoardMinion, type CardDefinition, type CardEffect, type CardInstance, type CollectibleClass, type DeckDefinition, type EffectTrigger, type GameAction, type GameLogEntry, type GameState, type IgnisWeaponData, type Keyword, type PlayerGameState, type PublicGameState, type Seat, type TargetRef } from "@dormstone/shared";
+import { GAME_RULES, cardNeedsTarget, type BoardLocation, type BoardMinion, type BoardSpecial, type CardDefinition, type CardEffect, type CardInstance, type CollectibleClass, type DeckDefinition, type EffectTrigger, type GameAction, type GameLogEntry, type GameState, type IgnisWeaponData, type Keyword, type PlayerGameState, type PublicGameState, type Seat, type TargetRef } from "@dormstone/shared";
 
 interface GamePlayerInput {
   nickname: string;
@@ -81,6 +81,7 @@ export function applyGameAction(game: GameState, actorNickname: string, action: 
   if (game.phase === "finished") throw new Error("对局已经结束。");
   const catalog = catalogFrom(cards);
   const actorSeat = seatFor(game, actorNickname);
+  for (const player of game.players) player.specials ??= [];
 
   if (action.type === "mulligan") {
     applyMulligan(game, actorSeat, action.cardInstanceIds, catalog);
@@ -95,12 +96,16 @@ export function applyGameAction(game: GameState, actorNickname: string, action: 
       addLog(game, `${game.players[actorSeat].nickname} 投降。`);
       return game;
     }
+    if (action.type === "cancel_choice") {
+      cancelChoice(game, actorSeat, action.choiceId);
+      return game;
+    }
     if (action.type !== "choose") throw new Error("请先完成当前选择。");
     applyChoice(game, actorSeat, action.choiceId, action.optionInstanceId, action.target, catalog);
     checkGameOver(game);
     return game;
   }
-  if (action.type === "choose") throw new Error("当前没有待完成的选择。");
+  if (action.type === "choose" || action.type === "cancel_choice") throw new Error("当前没有待完成的选择。");
   if (actorSeat !== game.currentPlayer && action.type !== "concede") throw new Error("现在不是你的回合。");
 
   switch (action.type) {
@@ -139,6 +144,7 @@ export function toPublicGameState(game: GameState, viewerNickname: string): Publ
   const viewerSeat = seatFor(game, viewerNickname);
   const players = game.players.map((player) => ({
     ...player,
+    specials: player.specials ?? [],
     deck: undefined,
     deckCount: player.deck.length,
     sideboard: undefined,
@@ -179,6 +185,7 @@ function createPlayerState(seat: Seat, input: GamePlayerInput, catalog: Map<stri
     }),
     board: [],
     locations: [],
+    specials: [],
     graveyard: [],
     maxMana: 0,
     manaCap: GAME_RULES.maxMana,
@@ -201,6 +208,7 @@ function applyStartOfGameRules(game: GameState, catalog: Map<string, CardDefinit
 }
 
 function countCeaselessEvent(game: GameState, _reason: string): void {
+  if (!game.ceaselessTrackingStarted) return;
   game.ceaselessEvents = (game.ceaselessEvents ?? 0) + 1;
 }
 
@@ -240,6 +248,7 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
   if ((card.type === "minion" || card.type === "location") && occupiedBoardSlots(player) >= GAME_RULES.maxBoardSize) throw new Error("战场已满。");
   player.mana -= cost;
   player.hand.splice(handIndex, 1);
+  game.ceaselessTrackingStarted = true;
   countCeaselessEvent(game, card.type === "spell" ? "法术被使用" : "卡牌被使用");
   if (card.type === "spell") player.spellsCastThisGame = (player.spellsCastThisGame ?? 0) + 1;
   if (counterPlayedCard(game, seat, card, catalog)) {
@@ -331,7 +340,7 @@ function useLocation(game: GameState, seat: Seat, locationInstanceId: string, ta
   applyEffects(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "location" }, catalog);
   applyRuleLocation(game, seat, card, target, catalog);
   location.durability -= 1;
-  location.readyTurn = game.turn + 2;
+  location.readyTurn = game.turn + 4;
   if (location.durability <= 0) {
     player.locations.splice(locationIndex, 1);
     player.graveyard.push(card.id);
@@ -574,7 +583,9 @@ function applyChoice(game: GameState, seat: Seat, choiceId: string, optionInstan
 
   if (choice.kind === "kiljaeden_demon") {
     chooseKiljaedenDemon(game, seat, option, catalog);
+    const continues = choice.continuesStartTurn;
     delete game.pendingChoice;
+    if (continues) advanceStartTurnQueue(game, catalog);
     return;
   }
 
@@ -640,7 +651,9 @@ function applyChoice(game: GameState, seat: Seat, choiceId: string, optionInstan
       const copy = count === 0 ? { ...option, owner: seat } : cloneGeneratedChoiceOption(option, seat);
       addCardToHand(game, seat, copy, catalog, `选择了 ${getCard(catalog, option.cardId).name}。`);
     }
+    const continues = choice.continuesStartTurn;
     delete game.pendingChoice;
+    if (continues) advanceStartTurnQueue(game, catalog);
     return;
   }
 
@@ -658,7 +671,7 @@ function applyChoice(game: GameState, seat: Seat, choiceId: string, optionInstan
   delete game.pendingChoice;
 }
 
-function beginChoice(game: GameState, seat: Seat, kind: NonNullable<GameState["pendingChoice"]>["kind"], prompt: string, options: CardInstance[], chosenFriendlyInstanceId?: string, sourceInstanceId?: string, copiesToAdd?: number, ignisWeapon?: IgnisWeaponData): void {
+function beginChoice(game: GameState, seat: Seat, kind: NonNullable<GameState["pendingChoice"]>["kind"], prompt: string, options: CardInstance[], chosenFriendlyInstanceId?: string, sourceInstanceId?: string, copiesToAdd?: number, ignisWeapon?: IgnisWeaponData, continuesStartTurn?: boolean): void {
   game.pendingChoice = {
     id: randomUUID(),
     seat,
@@ -668,8 +681,17 @@ function beginChoice(game: GameState, seat: Seat, kind: NonNullable<GameState["p
     chosenFriendlyInstanceId,
     sourceInstanceId,
     copiesToAdd,
-    ignisWeapon
+    ignisWeapon,
+    continuesStartTurn
   };
+}
+
+function cancelChoice(game: GameState, seat: Seat, choiceId: string): void {
+  const choice = game.pendingChoice;
+  if (!choice || choice.id !== choiceId || choice.seat !== seat) throw new Error("当前选择已经失效。");
+  if (choice.kind !== "titan_ability") throw new Error("这个选择不能取消。");
+  delete game.pendingChoice;
+  addLog(game, `${game.players[seat].nickname} 取消了泰坦技能选择。`);
 }
 
 function discoverHandOptions(game: GameState, seat: Seat, hand: CardInstance[], salt: string): CardInstance[] {
@@ -978,10 +1000,11 @@ function summonPureNest(game: GameState, seat: Seat, catalog: Map<string, CardDe
     addLog(game, `${sourceName} 检查后发现牌库仍有重复牌。`);
     return;
   }
-  summon(game, seat, "dragon_pure_nest", 1, catalog);
+  game.players[seat].specials.push(createBoardSpecial(createInstance("dragon_pure_nest", seat)));
+  addLog(game, `${sourceName} 召唤了一个纯净龙巢。`);
 }
 
-function discoverDragon(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string, discount: number, excludedCardIds: string[] = []): void {
+function discoverDragon(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string, discount: number, excludedCardIds: string[] = [], continuesStartTurn = false): void {
   const pool = dragonDiscoverPool(game, seat, catalog, excludedCardIds);
   if (pool.length === 0) return;
   const random = rng(game.seed + game.turn * 433 + seat * 83 + pool.length);
@@ -990,7 +1013,7 @@ function discoverDragon(game: GameState, seat: Seat, catalog: Map<string, CardDe
     const [card] = pool.splice(Math.floor(random() * pool.length), 1);
     picks.push({ ...createInstance(card.id, seat), costOverride: Math.max(0, card.cost + discount) });
   }
-  beginChoice(game, seat, "discover_to_hand", `从 ${sourceName} 的龙牌中选择一张。`, picks);
+  beginChoice(game, seat, "discover_to_hand", `从 ${sourceName} 的龙牌中选择一张。`, picks, undefined, undefined, undefined, undefined, continuesStartTurn);
 }
 
 function dragonDiscoverPool(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, excludedCardIds: string[] = []): CardDefinition[] {
@@ -1506,10 +1529,9 @@ function repackageMinions(game: GameState, seat: Seat, catalog: Map<string, Card
 function openRepackagedBox(game: GameState, seat: Seat, instance: CardInstance, catalog: Map<string, CardDefinition>, sourceName: string): void {
   const stored = instance.storedCardIds ?? [];
   for (const cardId of stored) {
-    if (occupiedBoardSlots(game.players[seat]) >= GAME_RULES.maxBoardSize) break;
-    if (getCard(catalog, cardId).type === "minion") summon(game, seat, cardId, 1, catalog);
+    if (getCard(catalog, cardId).type === "minion") addCardToHand(game, seat, createInstance(cardId, seat, "generated"), catalog, `从 ${sourceName} 取回了 ${getCard(catalog, cardId).name}。`);
   }
-  addLog(game, `${sourceName} 释放了 ${stored.length} 个被打包的随从。`);
+  addLog(game, `${sourceName} 将 ${stored.length} 个被打包的随从放入手牌。`);
 }
 
 function dragonfirePotion(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
@@ -1782,21 +1804,26 @@ function fizzleSnapshot(game: GameState, seat: Seat, instance: CardInstance, cat
 function kiljaedenPortal(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
   const player = game.players[seat];
   player.deck = [];
-  player.kiljaedenPortal = { bonus: 0, demonCardIds: KILJAEDEN_DEMON_CARD_IDS.filter((cardId) => catalog.has(cardId)) };
+  player.kiljaedenPortal = undefined;
+  player.specials.push(createBoardSpecial(createInstance("reno_token_kiljaeden_portal", seat), {
+    bonus: 0,
+    demonCardIds: KILJAEDEN_DEMON_CARD_IDS.filter((cardId) => catalog.has(cardId))
+  }));
   refillKiljaedenPortalDeck(game, seat, catalog);
   addLog(game, `${sourceName} 摧毁了牌库，并将其替换为无尽的恶魔传送门。`);
 }
 
 function beginKiljaedenPortalChoice(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
   const player = game.players[seat];
-  if (!player.kiljaedenPortal) return;
-  player.kiljaedenPortal.bonus += 2;
+  const portal = player.specials.find((special) => special.cardId === "reno_token_kiljaeden_portal");
+  if (!portal) return;
+  portal.bonus = (portal.bonus ?? 0) + 2;
   buffKiljaedenDemons(player.hand, 2, catalog);
   buffKiljaedenDemons(player.deck, 2, catalog);
   refillKiljaedenPortalDeck(game, seat, catalog);
   const options = discoverInstanceOptions(game, seat, player.deck.filter((instance) => instance.kiljaedenDemon), 3);
   if (options.length === 0) return;
-  beginChoice(game, seat, "kiljaeden_demon", "从恶魔传送门中选择一个恶魔。", options);
+  beginChoice(game, seat, "kiljaeden_demon", "从恶魔传送门中选择一个恶魔。", options, undefined, undefined, undefined, undefined, true);
 }
 
 function chooseKiljaedenDemon(game: GameState, seat: Seat, option: CardInstance, catalog: Map<string, CardDefinition>): void {
@@ -1809,16 +1836,18 @@ function chooseKiljaedenDemon(game: GameState, seat: Seat, option: CardInstance,
 
 function refillKiljaedenPortalDeck(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
   const player = game.players[seat];
-  const portal = player.kiljaedenPortal;
-  if (!portal || portal.demonCardIds.length === 0) return;
-  const random = rng(game.seed + game.turn * 733 + seat * 167 + player.deck.length + portal.bonus);
+  const portal = player.specials.find((special) => special.cardId === "reno_token_kiljaeden_portal");
+  const demonCardIds = portal?.demonCardIds ?? [];
+  const bonus = portal?.bonus ?? 0;
+  if (!portal || demonCardIds.length === 0) return;
+  const random = rng(game.seed + game.turn * 733 + seat * 167 + player.deck.length + bonus);
   while (player.deck.filter((instance) => instance.kiljaedenDemon).length < 30) {
-    const cardId = portal.demonCardIds[Math.floor(random() * portal.demonCardIds.length)];
+    const cardId = demonCardIds[Math.floor(random() * demonCardIds.length)];
     const card = getCard(catalog, cardId);
     player.deck.push({
       ...createInstance(cardId, seat),
-      attackOverride: (card.attack ?? 0) + portal.bonus,
-      healthOverride: (card.health ?? 1) + portal.bonus,
+      attackOverride: (card.attack ?? 0) + bonus,
+      healthOverride: (card.health ?? 1) + bonus,
       kiljaedenDemon: true
     });
   }
@@ -1944,9 +1973,50 @@ function yoggMadness(game: GameState, seat: Seat, catalog: Map<string, CardDefin
 }
 
 function yoggRandomSpells(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
-  dealRandomEnemyDamage(game, seat, 2, catalog, sourceName);
-  drawCards(game, seat, 1, catalog, true);
-  addLog(game, `${sourceName} 额外施放了两个随机法术。`);
+  const spells = [
+    {
+      cast: () => {
+        dealRandomEnemyDamage(game, seat, 2, catalog, `${sourceName} 的混乱箭`);
+        addLog(game, `${sourceName} 额外施放了混乱箭：随机分配 2 点伤害。`);
+      }
+    },
+    {
+      cast: () => {
+        const before = game.players[seat].hand.length;
+        drawCards(game, seat, 1, catalog, true);
+        addLog(game, `${sourceName} 额外施放了洞察：抽了 ${game.players[seat].hand.length - before} 张牌。`);
+      }
+    },
+    {
+      cast: () => {
+        let hit = 0;
+        for (const minion of [...game.players[other(seat)].board]) {
+          dealDamage(game, { type: "minion", seat: other(seat), instanceId: minion.instanceId }, 2, seat, catalog, false);
+          hit += 1;
+        }
+        cleanupDeaths(game, catalog);
+        addLog(game, `${sourceName} 额外施放了暗影新星：对 ${hit} 个敌方随从造成 2 点伤害。`);
+      }
+    },
+    {
+      cast: () => {
+        const before = game.players[seat].hero.health;
+        heal(game, { type: "hero", seat }, 4, catalog);
+        addLog(game, `${sourceName} 额外施放了治疗之触：恢复 ${game.players[seat].hero.health - before} 点生命值。`);
+      }
+    },
+    {
+      cast: () => {
+        const before = game.players[seat].board.length;
+        summon(game, seat, "reno_token_chaotic_tendril", 1, catalog);
+        addLog(game, `${sourceName} 额外施放了触须召唤：召唤了 ${game.players[seat].board.length - before} 个混乱触须。`);
+      }
+    }
+  ];
+  const random = rng(game.seed + game.turn * 809 + seat * 173 + game.logs.length);
+  for (let count = 0; count < 2; count += 1) {
+    spells[Math.floor(random() * spells.length)].cast();
+  }
 }
 
 function addRandomLegendaryMinionToHand(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
@@ -2319,12 +2389,12 @@ function startTurn(game: GameState, seat: Seat, catalog: Map<string, CardDefinit
   tickAvianaCountdown(game, seat);
   transformChameleosInHand(game, seat, catalog);
   transformHarmonicPopInHand(game, seat);
-  const skipDraw = resolveStartTurnRules(game, seat, catalog);
+  const handledStartChoices = beginStartTurnQueue(game, seat, catalog);
   for (const minion of player.board) {
     minion.exhausted = false;
     minion.attacksThisTurn = 0;
   }
-  if (!skipDraw) drawCards(game, seat, 1, catalog, true);
+  if (!handledStartChoices) drawCards(game, seat, 1, catalog, true);
   addLog(game, `第 ${game.turn} 回合开始，轮到 ${player.nickname}。`);
 }
 
@@ -2348,19 +2418,37 @@ function resolveEndTurnRules(game: GameState, seat: Seat, catalog: Map<string, C
   }
 }
 
-function resolveStartTurnRules(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): boolean {
+function beginStartTurnQueue(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): boolean {
   if (game.pendingChoice) return false;
-  if (game.players[seat].kiljaedenPortal) {
-    beginKiljaedenPortalChoice(game, seat, catalog);
-    return true;
-  }
-  for (const minion of game.players[seat].board) {
-    if (!minion.silenced && hasRule(getCard(catalog, minion.cardId), "dragon_pure_nest")) {
-      discoverDragon(game, seat, catalog, "纯净龙巢", -4, ["dragon_rheastrasza"]);
-      return false;
+  const effects = game.players[seat].specials
+    .filter((special) => special.cardId === "dragon_pure_nest" || special.cardId === "reno_token_kiljaeden_portal")
+    .map((special) => special.instanceId);
+  if (effects.length === 0) return false;
+  game.startTurnQueue = { seat, effects, index: 0, drawAfter: !effects.some((instanceId) => game.players[seat].specials.find((special) => special.instanceId === instanceId)?.cardId === "reno_token_kiljaeden_portal") };
+  advanceStartTurnQueue(game, catalog);
+  return true;
+}
+
+function advanceStartTurnQueue(game: GameState, catalog: Map<string, CardDefinition>): void {
+  const queue = game.startTurnQueue;
+  if (!queue) return;
+  const player = game.players[queue.seat];
+  while (queue.index < queue.effects.length) {
+    const instanceId = queue.effects[queue.index];
+    queue.index += 1;
+    const special = player.specials.find((item) => item.instanceId === instanceId);
+    if (!special) continue;
+    if (special.cardId === "reno_token_kiljaeden_portal") {
+      beginKiljaedenPortalChoice(game, queue.seat, catalog);
+      if (game.pendingChoice) return;
+    }
+    if (special.cardId === "dragon_pure_nest") {
+      discoverDragon(game, queue.seat, catalog, "纯净龙巢", -4, ["dragon_rheastrasza"], true);
+      if (game.pendingChoice) return;
     }
   }
-  return false;
+  delete game.startTurnQueue;
+  if (queue.drawAfter) drawCards(game, queue.seat, 1, catalog, true);
 }
 
 function expireTurnEffects(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
@@ -2713,6 +2801,13 @@ function createBoardLocation(instance: CardInstance, card: CardDefinition, turn:
     ...instance,
     durability: card.durability ?? 1,
     readyTurn: turn
+  };
+}
+
+function createBoardSpecial(instance: CardInstance, extra: Partial<BoardSpecial> = {}): BoardSpecial {
+  return {
+    ...instance,
+    ...extra
   };
 }
 

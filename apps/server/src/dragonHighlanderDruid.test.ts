@@ -122,7 +122,8 @@ describe("Dragon Highlander Druid", () => {
 
     applyGameAction(game, "A", { type: "play_card", handInstanceId: "rhea" }, sampleCards);
 
-    expect(game.players[0].board.map((minion) => minion.cardId)).toEqual(["dragon_rheastrasza", "dragon_pure_nest"]);
+    expect(game.players[0].board.map((minion) => minion.cardId)).toEqual(["dragon_rheastrasza"]);
+    expect(game.players[0].specials.map((special) => special.cardId)).toEqual(["dragon_pure_nest"]);
   });
 
   it("has Pure Nest discover discounted dragons without Rheastrasza", () => {
@@ -166,22 +167,11 @@ describe("Dragon Highlander Druid", () => {
     game.phase = "playing";
     game.currentPlayer = 1;
     game.turn = 8;
-    game.players[0].board = [{
+    game.players[0].specials = [{
       instanceId: "nest",
       cardId: "dragon_pure_nest",
       owner: 0,
-      origin: "generated",
-      attack: 0,
-      health: 1,
-      maxHealth: 1,
-      keywords: [],
-      exhausted: true,
-      summonedTurn: 7,
-      attacksThisTurn: 0,
-      silenced: false,
-      temporaryAttack: 0,
-      cannotAttack: true,
-      untouchable: true
+      origin: "generated"
     }];
     const catalog = new Map(cards.map((card) => [card.id, card]));
 
@@ -195,6 +185,41 @@ describe("Dragon Highlander Druid", () => {
       expect(card.races).toContain("DRAGON");
       expect(option.costOverride).toBe(Math.max(0, card.cost - 4));
     }
+  });
+
+  it("runs every Pure Nest before the turn draw", () => {
+    const game = liveGame();
+    game.currentPlayer = 1;
+    game.players[0].specials = [
+      { instanceId: "nest_a", cardId: "dragon_pure_nest", owner: 0, origin: "generated" },
+      { instanceId: "nest_b", cardId: "dragon_pure_nest", owner: 0, origin: "generated" }
+    ];
+    game.players[0].hand = Array.from({ length: 8 }, (_, index) => ({
+      instanceId: `hand_${index}`,
+      cardId: "neutral_squire",
+      owner: 0 as const,
+      origin: "starting_deck" as const
+    }));
+    game.players[0].deck = [{ instanceId: "drawn_after_nests", cardId: "neutral_guard", owner: 0, origin: "starting_deck" }];
+
+    applyGameAction(game, "B", { type: "end_turn" }, sampleCards);
+
+    expect(game.pendingChoice?.kind).toBe("discover_to_hand");
+    expect(game.players[0].hand).toHaveLength(8);
+    expect(game.players[0].deck.map((card) => card.instanceId)).toEqual(["drawn_after_nests"]);
+
+    const firstChoice = game.pendingChoice!;
+    applyGameAction(game, "A", { type: "choose", choiceId: firstChoice.id, optionInstanceId: firstChoice.options[0].instanceId }, sampleCards);
+    expect(game.pendingChoice?.kind).toBe("discover_to_hand");
+    expect(game.players[0].hand).toHaveLength(9);
+
+    const secondChoice = game.pendingChoice!;
+    applyGameAction(game, "A", { type: "choose", choiceId: secondChoice.id, optionInstanceId: secondChoice.options[0].instanceId }, sampleCards);
+
+    expect(game.pendingChoice).toBeUndefined();
+    expect(game.players[0].hand).toHaveLength(10);
+    expect(game.players[0].graveyard).toContain("neutral_guard");
+    expect(game.players[0].deck).toHaveLength(0);
   });
 
   it("lets Emerald Explorer discover from the expanded Druid and Neutral dragon pool", () => {
@@ -305,7 +330,7 @@ describe("Dragon Highlander Druid", () => {
     expect(generatedDragon.costOverride).toBe(Math.max(0, generatedCard.cost - 2));
   });
 
-  it("makes Pure Nest untouchable in combat and targeted effects", () => {
+  it("keeps Pure Nest as a special permanent outside combat and targeted effects", () => {
     const game = liveGame();
     game.players[0].deck = [];
     game.players[0].maxMana = 8;
@@ -313,8 +338,8 @@ describe("Dragon Highlander Druid", () => {
     game.players[0].hand = [{ instanceId: "rhea", cardId: "dragon_rheastrasza", owner: 0, origin: "starting_deck" }];
 
     applyGameAction(game, "A", { type: "play_card", handInstanceId: "rhea" }, sampleCards);
-    const nest = game.players[0].board.find((minion) => minion.cardId === "dragon_pure_nest")!;
-    expect(nest).toMatchObject({ cannotAttack: true, untouchable: true });
+    const nest = game.players[0].specials.find((special) => special.cardId === "dragon_pure_nest")!;
+    expect(game.players[0].board.map((minion) => minion.cardId)).not.toContain("dragon_pure_nest");
 
     game.currentPlayer = 1;
     game.players[1].board = [{
@@ -341,15 +366,69 @@ describe("Dragon Highlander Druid", () => {
         source: { type: "minion", seat: 1, instanceId: "attacker" },
         target: { type: "minion", seat: 0, instanceId: nest.instanceId }
       }, sampleCards)
-    ).toThrow("无法被攻击");
+    ).toThrow();
     expect(() =>
       applyGameAction(game, "B", {
         type: "play_card",
         handInstanceId: "blast",
         target: { type: "minion", seat: 0, instanceId: nest.instanceId }
       }, sampleCards)
-    ).toThrow("无法成为目标");
-    expect(nest.health).toBe(1);
+    ).toThrow();
+    expect(game.players[0].specials.map((special) => special.instanceId)).toContain(nest.instanceId);
+  });
+
+  it("uses Eonar's three Titan abilities across friendly turns", () => {
+    const game = liveGame();
+    game.turn = 10;
+    game.players[0].mana = 10;
+    game.players[0].maxMana = 10;
+    game.players[0].hand = [{ instanceId: "eonar", cardId: "dragon_eonar", owner: 0, origin: "starting_deck" }];
+    game.players[0].deck = Array.from({ length: 12 }, (_, index) => ({
+      instanceId: `draw_${index}`,
+      cardId: "neutral_squire",
+      owner: 0 as const,
+      origin: "starting_deck" as const
+    }));
+
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "eonar" }, sampleCards);
+    const eonar = game.players[0].board.find((minion) => minion.cardId === "dragon_eonar")!;
+
+    applyGameAction(game, "A", { type: "use_titan_ability", minionInstanceId: eonar.instanceId }, sampleCards);
+    let choice = game.pendingChoice!;
+    applyGameAction(game, "A", {
+      type: "choose",
+      choiceId: choice.id,
+      optionInstanceId: choice.options.find((option) => option.cardId === "dragon_choice_eonar_draw")!.instanceId
+    }, sampleCards);
+    expect(game.players[0].hand).toHaveLength(10);
+    expect(game.players[0].board.filter((minion) => minion.cardId === "dragon_token_eonar_tree")).toHaveLength(1);
+
+    applyGameAction(game, "A", { type: "end_turn" }, sampleCards);
+    applyGameAction(game, "B", { type: "end_turn" }, sampleCards);
+    game.players[0].hero.health = 7;
+    applyGameAction(game, "A", { type: "use_titan_ability", minionInstanceId: eonar.instanceId }, sampleCards);
+    choice = game.pendingChoice!;
+    applyGameAction(game, "A", {
+      type: "choose",
+      choiceId: choice.id,
+      optionInstanceId: choice.options.find((option) => option.cardId === "dragon_choice_eonar_heal")!.instanceId
+    }, sampleCards);
+    expect(game.players[0].hero.health).toBe(game.players[0].hero.maxHealth);
+    expect(game.players[0].board.filter((minion) => minion.cardId === "dragon_token_eonar_tree")).toHaveLength(2);
+
+    applyGameAction(game, "A", { type: "end_turn" }, sampleCards);
+    applyGameAction(game, "B", { type: "end_turn" }, sampleCards);
+    game.players[0].mana = 0;
+    applyGameAction(game, "A", { type: "use_titan_ability", minionInstanceId: eonar.instanceId }, sampleCards);
+    choice = game.pendingChoice!;
+    applyGameAction(game, "A", {
+      type: "choose",
+      choiceId: choice.id,
+      optionInstanceId: choice.options.find((option) => option.cardId === "dragon_choice_eonar_refresh")!.instanceId
+    }, sampleCards);
+    expect(game.players[0].mana).toBe(game.players[0].maxMana);
+    expect(eonar.usedTitanAbilityCardIds).toHaveLength(3);
+    expect(eonar.cannotAttack).toBe(false);
   });
 
   it("makes friendly minion cards cost 1 while Aviana is active", () => {

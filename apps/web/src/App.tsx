@@ -444,10 +444,16 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
 
   function handStyle(index: number, total: number): CSSProperties {
     const offset = index - (total - 1) / 2;
+    const crowding = Math.max(0, total - 8);
+    const rotation = Math.max(1.6, 4 - crowding * 0.9);
     return {
-      transform: `translateY(${Math.abs(offset) * 4}px) rotate(${offset * 4}deg)`,
+      transform: `translateY(${Math.abs(offset) * 3}px) rotate(${offset * rotation}deg)`,
       zIndex: index + 1
     };
+  }
+
+  function handRowStyle(total: number): CSSProperties {
+    return { "--hand-count": Math.max(1, total) } as CSSProperties;
   }
 
   if (game.phase === "mulligan") {
@@ -463,7 +469,7 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
           </button>
         </div>
         <p className="muted">点击不想保留的牌，它们会被标记出来；确认后进入对战。</p>
-        <div className="hand-row mulligan-hand">
+        <div className="hand-row mulligan-hand" style={handRowStyle(self.hand.length)}>
           {self.hand.map((instance, index) => {
             const card = cardMap.get(instance.cardId ?? "");
             if (!card) return null;
@@ -485,6 +491,7 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
           <HeroBox label="对手" player={opponent} active={game.currentPlayer === opponent.seat} targetable={Boolean(pending)} onClick={() => chooseTarget({ type: "hero", seat: opponent.seat })} />
 
           <div className="board-row opponent-board">
+            {(opponent.specials ?? []).map((special) => <SpecialTile key={special.instanceId} special={special} card={cardMap.get(special.cardId)} />)}
             {opponent.locations.map((location) => <LocationTile key={location.instanceId} location={location} card={cardMap.get(location.cardId)} cooldown={location.readyTurn > game.turn} targetable={false} />)}
             {opponent.board.map((minion) => <MinionTile key={minion.instanceId} minion={minion} card={cardMap.get(minion.cardId)} targetable={Boolean(pending)} onClick={() => chooseTarget({ type: "minion", seat: opponent.seat, instanceId: minion.instanceId })} />)}
           </div>
@@ -499,6 +506,7 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
           </div>
 
           <div className="board-row own-board">
+            {(self.specials ?? []).map((special) => <SpecialTile key={special.instanceId} special={special} card={cardMap.get(special.cardId)} />)}
             {self.locations.map((location) => {
               const card = cardMap.get(location.cardId);
               const ready = isTurn && location.readyTurn <= game.turn;
@@ -523,7 +531,7 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
 
           <HeroBox label="你" player={self} active={game.currentPlayer === self.seat} targetable={Boolean(pending)} onClick={() => chooseTarget({ type: "hero", seat: self.seat })} />
 
-          <div className="hand-row">
+          <div className="hand-row" style={handRowStyle(self.hand.length)}>
             {self.hand.map((instance, index) => {
               const card = cardMap.get(instance.cardId ?? "");
               if (!card) return null;
@@ -621,6 +629,11 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
                 })}
               </div>
             )}
+            {choiceForSelf?.kind === "titan_ability" && (
+              <button className="ghost choice-cancel" onClick={() => send({ type: "cancel_choice", choiceId: choiceForSelf.id }).catch(showError(setNotice))}>
+                <Ban size={16} /> 取消
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -644,8 +657,7 @@ function HeroBox({ label, player, active, targetable, onClick }: { label: string
   );
 }
 
-function MinionTile({ minion, card, attackStatus, targetable, onClick }: { minion: PublicGameState["players"][number]["board"][number]; card?: CardDefinition; attackStatus?: { ready: boolean; label: string }; targetable?: boolean; onClick: () => void }) {
-  const keywordText = minion.keywords.map(keywordLabel).join(" ");
+function useBoardCardPreview(card?: CardDefinition) {
   const hoverTimer = useRef<number | null>(null);
   const [previewPosition, setPreviewPosition] = useState<null | { left: number; top: number }>(null);
 
@@ -661,7 +673,7 @@ function MinionTile({ minion, card, attackStatus, targetable, onClick }: { minio
     setPreviewPosition(null);
   }
 
-  function schedulePreview(event: MouseEvent<HTMLButtonElement>) {
+  function schedulePreview(event: MouseEvent<HTMLElement>) {
     if (!card) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const width = 168;
@@ -674,6 +686,13 @@ function MinionTile({ minion, card, attackStatus, targetable, onClick }: { minio
     const top = Math.min(window.innerHeight - height - margin, Math.max(margin, preferredTop));
     hoverTimer.current = window.setTimeout(() => setPreviewPosition({ left, top }), 1000);
   }
+
+  return { clearPreview, previewPosition, schedulePreview };
+}
+
+function MinionTile({ minion, card, attackStatus, targetable, onClick }: { minion: PublicGameState["players"][number]["board"][number]; card?: CardDefinition; attackStatus?: { ready: boolean; label: string }; targetable?: boolean; onClick: () => void }) {
+  const keywordText = minion.keywords.map(keywordLabel).join(" ");
+  const { clearPreview, previewPosition, schedulePreview } = useBoardCardPreview(card);
 
   return (
     <button className={`minion ${attackStatus?.ready ? "ready" : ""} ${targetable ? "targetable" : ""}`} onClick={onClick} onMouseEnter={schedulePreview} onMouseLeave={clearPreview} onBlur={clearPreview}>
@@ -693,12 +712,37 @@ function MinionTile({ minion, card, attackStatus, targetable, onClick }: { minio
 }
 
 function LocationTile({ location, card, ready, cooldown, targetable, onClick }: { location: PublicGameState["players"][number]["locations"][number]; card?: CardDefinition; ready?: boolean; cooldown?: boolean; targetable?: boolean; onClick?: () => void }) {
+  const { clearPreview, previewPosition, schedulePreview } = useBoardCardPreview(card);
   return (
-    <button className={`location ${ready ? "ready" : ""} ${targetable ? "targetable" : ""}`} disabled={!onClick && !targetable} onClick={onClick}>
+    <button className={`location ${ready ? "ready" : ""} ${targetable ? "targetable" : ""}`} disabled={!onClick && !targetable} onClick={onClick} onMouseEnter={schedulePreview} onMouseLeave={clearPreview} onBlur={clearPreview}>
       <div className="location-rune">◆</div>
       <strong>{card?.name ?? location.cardId}</strong>
       <span>{location.durability}</span>
       <small>{ready ? "可使用" : cooldown ? "冷却中" : "等待"}</small>
+      {card && previewPosition && createPortal(
+        <div className="board-card-detail-popover" style={{ left: previewPosition.left, top: previewPosition.top }} aria-hidden="true">
+          <CardPreview card={card} className="board-card-preview-card" />
+        </div>,
+        document.body
+      )}
+    </button>
+  );
+}
+
+function SpecialTile({ special, card }: { special: PublicGameState["players"][number]["specials"][number]; card?: CardDefinition }) {
+  const { clearPreview, previewPosition, schedulePreview } = useBoardCardPreview(card);
+  const detail = special.cardId === "reno_token_kiljaeden_portal" ? `+${special.bonus ?? 0}/+${special.bonus ?? 0}` : "永久";
+  return (
+    <button className="special-site" onMouseEnter={schedulePreview} onMouseLeave={clearPreview} onBlur={clearPreview}>
+      <div className="location-rune">✦</div>
+      <strong>{card?.name ?? special.cardId}</strong>
+      <small>{detail}</small>
+      {card && previewPosition && createPortal(
+        <div className="board-card-detail-popover" style={{ left: previewPosition.left, top: previewPosition.top }} aria-hidden="true">
+          <CardPreview card={card} className="board-card-preview-card" />
+        </div>,
+        document.body
+      )}
     </button>
   );
 }

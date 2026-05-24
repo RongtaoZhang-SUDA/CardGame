@@ -1,7 +1,7 @@
 import type { CardDefinition, DeckTemplate, HeroClassProfile } from "@dormstone/shared";
 
 type CardInput = Omit<CardDefinition, "status" | "collectible" | "version" | "updatedAt" | "keywords" | "effects"> &
-  Partial<Pick<CardDefinition, "collectible" | "keywords" | "effects" | "rules" | "sideboardSlots" | "deckRules" | "requiresTarget" | "choiceOptionCardIds">>;
+  Partial<Pick<CardDefinition, "collectible" | "keywords" | "effects" | "rules" | "sideboardSlots" | "deckRules" | "requiresTarget" | "choiceOptionCardIds" | "titanAbilityCardIds">>;
 
 const now = new Date().toISOString();
 
@@ -57,7 +57,7 @@ export const dragonHighlanderDruidCards: CardDefinition[] = [
   card({ id: "dragon_rheastrasza", name: "瑞亚丝塔萨", class: "druid", type: "minion", rarity: "legendary", cost: 8, attack: 8, health: 8, races: ["DRAGON"], text: "战吼：如果你的套牌里没有相同的牌，则召唤纯净龙巢。", keywords: ["battlecry"], rules: ["dragon_rheastrasza"] }),
   card({ id: "dragon_lone_ranger_reno", name: "孤胆游侠雷诺", class: "neutral", type: "hero", rarity: "legendary", cost: 8, health: 30, text: "战吼：如果你的套牌里没有相同的牌，将所有敌方随从移出对战。将你的英雄技能替换为随机切换的雷诺手枪。", effects: [{ type: "gain_armor", amount: 5 }], rules: ["priest_lone_ranger_reno"] }),
   card({ id: "dragon_aviana", name: "艾维娜", class: "druid", type: "minion", rarity: "legendary", cost: 9, attack: 5, health: 5, text: "你的随从牌的法力值消耗为（1）点。", rules: ["dragon_aviana"] }),
-  card({ id: "dragon_eonar", name: "生命的缚誓者艾欧娜尔", class: "druid", type: "minion", rarity: "legendary", cost: 10, attack: 5, health: 7, text: "泰坦。在本随从使用一个技能后，召唤一棵5/5并具有嘲讽的古树。", choiceOptionCardIds: ["dragon_choice_eonar_draw", "dragon_choice_eonar_heal", "dragon_choice_eonar_refresh"] }),
+  card({ id: "dragon_eonar", name: "生命的缚誓者艾欧娜尔", class: "druid", type: "minion", rarity: "legendary", cost: 10, attack: 5, health: 7, races: ["TITAN"], text: "泰坦。在本随从使用一个技能后，召唤一棵5/5并具有嘲讽的古树。", titanAbilityCardIds: ["dragon_choice_eonar_draw", "dragon_choice_eonar_heal", "dragon_choice_eonar_refresh"] }),
 
   card({ id: "dragon_faerie_dragon", name: "精灵龙", class: "neutral", type: "minion", rarity: "common", cost: 2, attack: 3, health: 2, races: ["DRAGON"], text: "灵巧的中立龙。", keywords: [] }),
   card({ id: "dragon_dreaming_drake", name: "迷梦幼龙", class: "druid", type: "minion", rarity: "common", cost: 3, attack: 3, health: 4, races: ["DRAGON"], text: "嘲讽。", keywords: ["taunt"] }),

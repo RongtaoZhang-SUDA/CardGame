@@ -447,8 +447,12 @@ describe("game engine", () => {
     expect(copy).toMatchObject({ costOverride: 1, attackOverride: 1, healthOverride: 1 });
     applyGameAction(game, "A", { type: "play_card", handInstanceId: copy.instanceId }, sampleCards);
     expect(game.players[0].board[0]).toMatchObject({ cardId: "neutral_colossus", attack: 1, health: 1, maxHealth: 1 });
-    expect(game.players[0].locations[0]).toMatchObject({ durability: 1, readyTurn: game.turn + 2 });
-    expect(() => applyGameAction(game, "A", { type: "use_location", locationInstanceId: locationId, target: firstTarget }, sampleCards)).toThrow("地标");
+    expect(game.players[0].locations[0]).toMatchObject({ durability: 1, readyTurn: game.turn + 4 });
+    expect(() => applyGameAction(game, "A", { type: "use_location", locationInstanceId: locationId, target: firstTarget }, sampleCards)).toThrow();
+
+    applyGameAction(game, "A", { type: "end_turn" }, sampleCards);
+    applyGameAction(game, "B", { type: "end_turn" }, sampleCards);
+    expect(() => applyGameAction(game, "A", { type: "use_location", locationInstanceId: locationId, target: { type: "minion", seat: 1, instanceId: "second_puppet_target" } }, sampleCards)).toThrow();
 
     applyGameAction(game, "A", { type: "end_turn" }, sampleCards);
     applyGameAction(game, "B", { type: "end_turn" }, sampleCards);

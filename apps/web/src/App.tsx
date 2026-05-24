@@ -1,5 +1,6 @@
 import { Ban, CheckCircle2, DoorOpen, LogIn, Plus, RefreshCcw, Save, Shield, Swords, Trash2, Upload, WandSparkles } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
+import { createPortal } from "react-dom";
 import { io, type Socket } from "socket.io-client";
 import { CARD_CLASSES, CLASS_LABELS, cardNeedsTarget, validateCard, type CardDefinition, type CardEffect, type DeckTemplate, type GameAction, type PlayerProfile, type PublicGameState, type RoomState, type TargetRef } from "@dormstone/shared";
 
@@ -628,13 +629,48 @@ function HeroBox({ label, player, active, targetable, onClick }: { label: string
 
 function MinionTile({ minion, card, attackStatus, targetable, onClick }: { minion: PublicGameState["players"][number]["board"][number]; card?: CardDefinition; attackStatus?: { ready: boolean; label: string }; targetable?: boolean; onClick: () => void }) {
   const keywordText = minion.keywords.map(keywordLabel).join(" ");
+  const hoverTimer = useRef<number | null>(null);
+  const [previewPosition, setPreviewPosition] = useState<null | { left: number; top: number }>(null);
+
+  useEffect(() => () => {
+    if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
+  }, []);
+
+  function clearPreview() {
+    if (hoverTimer.current !== null) {
+      window.clearTimeout(hoverTimer.current);
+      hoverTimer.current = null;
+    }
+    setPreviewPosition(null);
+  }
+
+  function schedulePreview(event: MouseEvent<HTMLButtonElement>) {
+    if (!card) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const width = 168;
+    const height = 236;
+    const margin = 16;
+    const preferredLeft = rect.right + width + margin <= window.innerWidth ? rect.right + margin : rect.left - width - margin;
+    const fallbackLeft = rect.left + rect.width / 2 - width / 2;
+    const left = Math.min(window.innerWidth - width - margin, Math.max(margin, preferredLeft < margin ? fallbackLeft : preferredLeft));
+    const preferredTop = rect.top + rect.height / 2 - height / 2;
+    const top = Math.min(window.innerHeight - height - margin, Math.max(margin, preferredTop));
+    hoverTimer.current = window.setTimeout(() => setPreviewPosition({ left, top }), 1000);
+  }
+
   return (
-    <button className={`minion ${attackStatus?.ready ? "ready" : ""} ${targetable ? "targetable" : ""}`} onClick={onClick}>
+    <button className={`minion ${attackStatus?.ready ? "ready" : ""} ${targetable ? "targetable" : ""}`} onClick={onClick} onMouseEnter={schedulePreview} onMouseLeave={clearPreview} onBlur={clearPreview}>
       <div className="minion-art">{card?.assetUrl ? <img src={card.assetUrl} alt={card.name} /> : <span>{(card?.name ?? minion.cardId).slice(0, 1)}</span>}</div>
       <strong>{card?.name ?? minion.cardId}</strong>
       <div className="minion-stats"><b>{minion.attack}</b><b>{minion.health}</b></div>
       {keywordText && <small>{keywordText}</small>}
       {attackStatus && <em>{attackStatus.label}</em>}
+      {card && previewPosition && createPortal(
+        <div className="board-card-detail-popover" style={{ left: previewPosition.left, top: previewPosition.top }} aria-hidden="true">
+          <CardPreview card={card} attack={minion.attack} health={minion.health} className="board-card-preview-card" />
+        </div>,
+        document.body
+      )}
     </button>
   );
 }
@@ -669,6 +705,28 @@ function CardTile({ card, cost = card.cost, count, attack = card.attack, health 
       )}
       {count !== undefined && <em className="count">x{count}</em>}
     </button>
+  );
+}
+
+function CardPreview({ card, cost = card.cost, count, attack = card.attack, health = card.health, className = "" }: { card: CardDefinition; cost?: number; count?: number; attack?: number; health?: number; className?: string }) {
+  const hasStats = card.type === "minion" || card.type === "weapon" || card.type === "location";
+  return (
+    <div className={`card-tile rarity-${card.rarity} ${className}`}>
+      <span className={`cost ${cost !== card.cost ? "modified" : ""}`}>{cost}</span>
+      <div className="card-frame">
+        {card.assetUrl ? <img src={card.assetUrl} alt={card.name} /> : <div className="card-art">{CLASS_LABELS[card.class][0]}</div>}
+        <strong>{card.name}</strong>
+        <small>{CLASS_LABELS[card.class]} 路 {typeLabel(card.type)}</small>
+        <p>{card.text || keywordLine(card)}</p>
+      </div>
+      {hasStats && (
+        <span className="card-stats">
+          {card.type !== "location" && <b className="attack-stat">{attack ?? 0}</b>}
+          <b className="health-stat">{card.type === "weapon" || card.type === "location" ? card.durability ?? 0 : health ?? 0}</b>
+        </span>
+      )}
+      {count !== undefined && <em className="count">x{count}</em>}
+    </div>
   );
 }
 

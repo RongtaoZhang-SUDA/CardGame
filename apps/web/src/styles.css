@@ -1040,6 +1040,37 @@ p {
   font-weight: 900;
 }
 
+.board-card-detail-popover {
+  position: fixed;
+  z-index: 3000;
+  pointer-events: none;
+  animation: board-card-preview-in 0.12s ease-out both;
+}
+
+.board-card-preview-card {
+  width: 168px;
+  height: 236px;
+  min-height: 236px;
+  border-width: 3px;
+  filter: none;
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.66), 0 0 22px rgba(255, 210, 112, 0.24);
+}
+
+.board-card-preview-card:hover {
+  transform: none;
+}
+
+@keyframes board-card-preview-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .location {
   background: linear-gradient(180deg, #433d70, #171529);
 }

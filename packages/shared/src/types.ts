@@ -171,7 +171,21 @@ export type CardRuleTag =
   | "mage_acolyte_of_pain"
   | "mage_polymorph"
   | "mage_blizzard"
-  | "mage_alexstrasza";
+  | "mage_alexstrasza"
+  | "rogue_preparation"
+  | "rogue_shadowstep"
+  | "rogue_backstab"
+  | "rogue_the_caverns_below"
+  | "rogue_fire_fly"
+  | "rogue_southsea_deckhand"
+  | "rogue_swashburglar_huckster"
+  | "rogue_patches"
+  | "rogue_youthful_brewmaster"
+  | "rogue_gadgetzan_ferryman"
+  | "rogue_eviscerate"
+  | "rogue_igneous_elemental"
+  | "rogue_mimic_pod"
+  | "rogue_crystal_core";
 
 export type TargetKind = "none" | "selected" | "enemy_hero" | "own_hero" | "all_enemies" | "all_enemy_minions" | "all_minions" | "any_minion" | "friendly_minion" | "enemy_minion";
 
@@ -379,6 +393,18 @@ export interface HeroState {
   heroPowerCost?: number;
 }
 
+export interface QuestState {
+  cardId: string;
+  name: string;
+  progress: number;
+  required: number;
+  completed: boolean;
+  rewardCardId: string;
+  playedMinionNames: Record<string, number>;
+  lastProgressCardName?: string;
+  lastProgressLogId?: number;
+}
+
 export interface PlayerGameState {
   seat: Seat;
   nickname: string;
@@ -401,6 +427,14 @@ export interface PlayerGameState {
     amount: number;
     throughTurn: number;
   };
+  nextSpellDiscount?: {
+    amount: number;
+    throughTurn: number;
+  };
+  cardsPlayedThisTurn?: number;
+  comboActiveForCurrentCard?: boolean;
+  quest?: QuestState;
+  crystalCoreActive?: boolean;
   avianaCountdown?: number;
   avianaActive?: boolean;
   spellsCastThisGame?: number;

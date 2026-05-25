@@ -429,6 +429,21 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
     : pending?.kind === "location" ? "请选择地标目标"
     : "";
 
+  const seenQuestProgress = useRef<Record<number, number | undefined>>({});
+
+  useEffect(() => {
+    for (const player of [self, opponent]) {
+      const quest = player.quest;
+      if (!quest?.lastProgressLogId || seenQuestProgress.current[player.seat] === quest.lastProgressLogId) continue;
+      seenQuestProgress.current[player.seat] = quest.lastProgressLogId;
+      setNotice(`${player.seat === self.seat ? "我方" : "对手"}${quest.name}：${quest.progress}/${quest.required}${quest.completed ? "，任务完成" : ""}`);
+    }
+  }, [
+    self,
+    opponent,
+    setNotice
+  ]);
+
   async function send(action: GameAction) {
     await emitAck(socket, "game:action", { action });
     setPending(null);
@@ -474,7 +489,11 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
           {self.hand.map((instance, index) => {
             const card = cardMap.get(instance.cardId ?? "");
             if (!card) return null;
-            return <CardTile key={instance.instanceId} card={card} selected={mulligan.has(instance.instanceId)} style={handStyle(index, self.hand.length)} onClick={() => setMulligan(toggleSet(mulligan, instance.instanceId))} />;
+            const locked = card.rules?.includes("rogue_the_caverns_below") || card.id === "coin";
+            return <CardTile key={instance.instanceId} card={card} selected={!locked && mulligan.has(instance.instanceId)} className={locked ? "mulligan-locked" : ""} style={handStyle(index, self.hand.length)} onClick={() => {
+              if (locked) return;
+              setMulligan(toggleSet(mulligan, instance.instanceId));
+            }} />;
           })}
         </div>
       </section>
@@ -582,6 +601,8 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
             <span>对手手牌 <b>{opponent.hand.length}</b></span>
             {self.sideboardCount > 0 && <span>乐队备牌 <b>{self.sideboardCount}</b></span>}
           </div>
+          {self.quest && <QuestTracker label="我方任务" quest={self.quest} />}
+          {opponent.quest && <QuestTracker label="对手任务" quest={opponent.quest} />}
           <button className="hero-power-button" disabled={!isTurn || self.hero.heroPowerUsed || self.mana < heroPowerCost} onClick={() => setPending({ kind: "hero_power" })}>
             <WandSparkles size={17} /> {heroPowerCard?.name ?? "英雄技能"} <b>{heroPowerCost}</b>
           </button>
@@ -639,6 +660,24 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
         </div>
       )}
     </>
+  );
+}
+
+function QuestTracker({ label, quest }: { label: string; quest: NonNullable<PublicGameState["players"][number]["quest"]> }) {
+  const progress = Math.min(quest.required, quest.progress);
+  const width = `${Math.round((progress / Math.max(1, quest.required)) * 100)}%`;
+  return (
+    <div className={`quest-tracker ${quest.completed ? "completed" : ""}`}>
+      <div className="quest-heading">
+        <span>{label}</span>
+        <b>{progress}/{quest.required}</b>
+      </div>
+      <strong>{quest.name}</strong>
+      <div className="quest-progress" aria-hidden="true">
+        <span style={{ width }} />
+      </div>
+      {quest.lastProgressCardName && <small>{quest.lastProgressCardName}</small>}
+    </div>
   );
 }
 
@@ -863,10 +902,11 @@ function cardPlayCost(card: CardDefinition, costOverride: number | undefined, pl
   const hasRazorscale = opponentBoard.some((minion) => !minion.silenced && cardMap.get(minion.cardId)?.rules?.includes("razorscale"));
   const hasAviana = player.board.some((minion) => !minion.silenced && cardMap.get(minion.cardId)?.rules?.includes("dragon_aviana"));
   const spellTax = card.type === "spell" && player.spellCostIncrease?.throughTurn === turn ? player.spellCostIncrease.amount : 0;
+  const spellDiscount = card.type === "spell" && player.nextSpellDiscount?.throughTurn === turn ? player.nextSpellDiscount.amount : 0;
   const dynamicCost = card.rules?.includes("priest_ceaseless_expanse") ? Math.max(0, card.cost - (ceaselessEvents ?? 0)) : card.cost;
   const printedOrOverriddenCost = costOverride ?? dynamicCost;
   const baseCost = player.avianaActive ? Math.min(printedOrOverriddenCost, 1) : card.type === "minion" && hasAviana ? 1 : printedOrOverriddenCost;
-  const cost = baseCost + spellTax;
+  const cost = Math.max(0, baseCost + spellTax - spellDiscount);
   return hasRazorscale ? Math.max(cost, 2) : cost;
 }
 

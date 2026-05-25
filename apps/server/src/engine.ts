@@ -68,10 +68,14 @@ export function createGame(roomCode: string, players: [GamePlayerInput, GamePlay
     logs: []
   };
   applyStartOfGameRules(game, catalog);
+  const openingQuestCounts = [
+    putOpeningQuestsInHand(game, 0, catalog),
+    putOpeningQuestsInHand(game, 1, catalog)
+  ] as const;
   shuffle(game.players[0].deck, rng(seed + 11));
   shuffle(game.players[1].deck, rng(seed + 29));
-  drawCards(game, firstSeat, GAME_RULES.startingHand[0], catalog, false);
-  drawCards(game, other(firstSeat), GAME_RULES.startingHand[1], catalog, false);
+  drawCards(game, firstSeat, Math.max(0, GAME_RULES.startingHand[0] - openingQuestCounts[firstSeat]), catalog, false);
+  drawCards(game, other(firstSeat), Math.max(0, GAME_RULES.startingHand[1] - openingQuestCounts[other(firstSeat)]), catalog, false);
   game.players[other(firstSeat)].hand.push(createInstance("coin", other(firstSeat)));
   addLog(game, `${game.players[firstSeat].nickname} 随机获得先手，双方完成起手抽牌，等待换牌。`);
   return game;
@@ -194,6 +198,8 @@ function createPlayerState(seat: Seat, input: GamePlayerInput, catalog: Map<stri
     mana: 0,
     fatigue: 0,
     mulliganDone: false,
+    cardsPlayedThisTurn: 0,
+    crystalCoreActive: false,
     spellsCastThisGame: 0,
     forgedThisGame: false
   };
@@ -209,6 +215,20 @@ function applyStartOfGameRules(game: GameState, catalog: Map<string, CardDefinit
   }
 }
 
+function putOpeningQuestsInHand(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): number {
+  const player = game.players[seat];
+  const openingQuests = player.deck.filter((instance) => isOpeningQuest(instance, catalog));
+  if (openingQuests.length === 0) return 0;
+  const questIds = new Set(openingQuests.map((instance) => instance.instanceId));
+  player.deck = player.deck.filter((instance) => !questIds.has(instance.instanceId));
+  player.hand.push(...openingQuests);
+  return openingQuests.length;
+}
+
+function isOpeningQuest(instance: CardInstance, catalog: Map<string, CardDefinition>): boolean {
+  return hasRule(getCard(catalog, instance.cardId), "rogue_the_caverns_below");
+}
+
 function countCeaselessEvent(game: GameState, _reason: string): void {
   if (!game.ceaselessTrackingStarted) return;
   game.ceaselessEvents = (game.ceaselessEvents ?? 0) + 1;
@@ -222,7 +242,7 @@ function applyMulligan(game: GameState, seat: Seat, cardInstanceIds: string[], c
   const kept: CardInstance[] = [];
   const returned: CardInstance[] = [];
   for (const card of player.hand) {
-    if (selected.has(card.instanceId) && card.cardId !== "coin") returned.push(card);
+    if (selected.has(card.instanceId) && card.cardId !== "coin" && !isOpeningQuest(card, catalog)) returned.push(card);
     else kept.push(card);
   }
   player.hand = kept;
@@ -249,23 +269,28 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
 
   if ((card.type === "minion" || card.type === "location") && occupiedBoardSlots(player) >= GAME_RULES.maxBoardSize) throw new Error("战场已满。");
   if (isSecretCard(card) && player.secrets.some((secret) => secret.cardId === card.id)) throw new Error("不能重复挂上同一个奥秘。");
+  const consumedSpellDiscount = card.type === "spell" && player.nextSpellDiscount?.throughTurn === game.turn;
+  player.comboActiveForCurrentCard = (player.cardsPlayedThisTurn ?? 0) > 0;
   player.mana -= cost;
   player.hand.splice(handIndex, 1);
+  if (consumedSpellDiscount) delete player.nextSpellDiscount;
   game.ceaselessTrackingStarted = true;
   countCeaselessEvent(game, card.type === "spell" ? "法术被使用" : "卡牌被使用");
   if (card.type === "spell") player.spellsCastThisGame = (player.spellsCastThisGame ?? 0) + 1;
   if (counterPlayedCard(game, seat, card, catalog)) {
     player.graveyard.push(card.id);
+    recordCardPlayed(player);
     return;
   }
   if (isSecretCard(card)) {
     player.secrets.push(instance);
+    recordCardPlayed(player);
     addLog(game, `${player.nickname} 设下了一个奥秘。`);
     return;
   }
 
   if (card.type === "minion") {
-    const minion = createBoardMinion(instance, card, game.turn);
+    const minion = createBoardMinion(applyCrystalCoreToInstance(game, seat, instance, catalog), card, game.turn);
     player.board.push(minion);
     if (hasRule(card, "dragon_death_beetle") && player.maxMana >= 11) {
       minion.attack += 4;
@@ -274,7 +299,13 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
       addKeyword(minion, "charge");
       minion.exhausted = false;
     }
+    if (hasRule(card, "rogue_southsea_deckhand") && player.hero.weapon) {
+      addKeyword(minion, "charge");
+      minion.exhausted = false;
+    }
     addLog(game, `${player.nickname} 召唤了 ${card.name}。`);
+    trackQuestMinionPlayed(game, seat, card, catalog);
+    maybeSummonPatches(game, seat, card, catalog);
     const battlecryRepeats = !hasRule(card, "dragon_brann") && player.board.some((boardMinion) => !boardMinion.silenced && hasRule(getCard(catalog, boardMinion.cardId), "dragon_brann")) ? 2 : 1;
     for (let repeat = 0; repeat < battlecryRepeats; repeat += 1) {
       applyEffects(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "battlecry" }, catalog);
@@ -319,6 +350,7 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
   }
   drawMoonlitOriginal(game, seat, instance, catalog);
   cleanupDeaths(game, catalog);
+  recordCardPlayed(player);
 }
 
 function forgeCard(game: GameState, seat: Seat, handInstanceId: string, catalog: Map<string, CardDefinition>): void {
@@ -465,6 +497,13 @@ function applyRuleBattlecry(game: GameState, seat: Seat, instance: CardInstance,
   }
   if (hasRule(card, "dragon_doomkin")) stealEmptyMana(game, seat, card.name);
   if (hasRule(card, "dragon_rheastrasza")) summonPureNest(game, seat, catalog, card.name);
+  if (hasRule(card, "rogue_fire_fly")) addCardToHand(game, seat, createInstance("quest_rogue_flame_elemental", seat), catalog, `获得了 ${getCard(catalog, "quest_rogue_flame_elemental").name}。`);
+  if (hasRule(card, "rogue_swashburglar_huckster")) addRandomOpponentClassCard(game, seat, catalog, card.name);
+  if (hasRule(card, "rogue_youthful_brewmaster")) returnFriendlyMinionToHand(game, seat, target, catalog, card.name, 0);
+  if (hasRule(card, "rogue_gadgetzan_ferryman")) {
+    if (player.comboActiveForCurrentCard) returnFriendlyMinionToHand(game, seat, target, catalog, card.name, 0);
+    else addLog(game, `${card.name} 没有触发连击。`);
+  }
   if (hasRule(card, "mage_alexstrasza")) alexstraszaClassic(game, target, catalog, card.name);
 }
 
@@ -512,6 +551,13 @@ function applyRulePlay(game: GameState, seat: Seat, instance: CardInstance, card
   if (hasRule(card, "mage_frost_nova")) freezeEnemyMinions(game, seat, catalog, card.name);
   if (hasRule(card, "mage_polymorph")) polymorph(game, target, catalog, card.name);
   if (hasRule(card, "mage_blizzard")) blizzard(game, seat, card, catalog);
+  if (hasRule(card, "rogue_preparation")) prepareNextSpell(game, seat, card.name);
+  if (hasRule(card, "rogue_shadowstep")) returnFriendlyMinionToHand(game, seat, target, catalog, card.name, -2);
+  if (hasRule(card, "rogue_backstab")) backstab(game, seat, target, catalog, card.name);
+  if (hasRule(card, "rogue_the_caverns_below")) activateQuestRogue(game, seat, card);
+  if (hasRule(card, "rogue_eviscerate")) eviscerate(game, seat, target, catalog, card.name);
+  if (hasRule(card, "rogue_mimic_pod")) mimicPod(game, seat, catalog, card.name);
+  if (hasRule(card, "rogue_crystal_core")) activateCrystalCore(game, seat, catalog, card.name);
 }
 
 function applyRuleLocation(game: GameState, seat: Seat, card: CardDefinition, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
@@ -693,6 +739,7 @@ function discoverHandOptions(game: GameState, seat: Seat, hand: CardInstance[], 
 
 function addCardToHand(game: GameState, seat: Seat, instance: CardInstance, catalog: Map<string, CardDefinition>, message: string): void {
   const player = game.players[seat];
+  applyCrystalCoreToInstance(game, seat, instance, catalog);
   if (player.hand.length >= GAME_RULES.maxHandSize) {
     player.graveyard.push(instance.cardId);
     countCeaselessEvent(game, "卡牌被摧毁");
@@ -701,6 +748,11 @@ function addCardToHand(game: GameState, seat: Seat, instance: CardInstance, cata
   }
   player.hand.push(instance);
   addLog(game, `${player.nickname} ${message}`);
+}
+
+function recordCardPlayed(player: PlayerGameState): void {
+  player.cardsPlayedThisTurn = (player.cardsPlayedThisTurn ?? 0) + 1;
+  delete player.comboActiveForCurrentCard;
 }
 
 function updateFloopCopies(player: PlayerGameState, playedCard: CardDefinition, playedInstanceId: string): void {
@@ -1484,6 +1536,139 @@ function powerChordSynchronize(game: GameState, seat: Seat, target: TargetRef | 
     copy.healthOverride = minion.maxHealth + 2;
   }
   addCardToHand(game, seat, copy, catalog, `获得了 ${getCard(catalog, minion.cardId).name} 的复制。`);
+}
+
+function prepareNextSpell(game: GameState, seat: Seat, sourceName: string): void {
+  game.players[seat].nextSpellDiscount = { amount: 3, throughTurn: game.turn };
+  addLog(game, `${sourceName} 使下一个法术的法力值消耗减少（3）点。`);
+}
+
+function activateQuestRogue(game: GameState, seat: Seat, card: CardDefinition): void {
+  const player = game.players[seat];
+  player.quest = {
+    cardId: card.id,
+    name: card.name,
+    progress: 0,
+    required: 4,
+    completed: false,
+    rewardCardId: "quest_rogue_crystal_core",
+    playedMinionNames: {}
+  };
+  addLog(game, `${player.nickname} 开始任务：${card.name}（0/4）。`);
+}
+
+function trackQuestMinionPlayed(game: GameState, seat: Seat, card: CardDefinition, catalog: Map<string, CardDefinition>): void {
+  const quest = game.players[seat].quest;
+  if (!quest || quest.completed || quest.cardId !== "quest_rogue_the_caverns_below") return;
+  const nextCount = (quest.playedMinionNames[card.name] ?? 0) + 1;
+  quest.playedMinionNames[card.name] = nextCount;
+  const nextProgress = Math.min(quest.required, Math.max(quest.progress, nextCount));
+  if (nextProgress <= quest.progress) return;
+  quest.progress = nextProgress;
+  quest.lastProgressCardName = card.name;
+  const entry = addLog(game, `任务进度提升：${quest.name} - ${card.name} ${quest.progress}/${quest.required}。`);
+  quest.lastProgressLogId = entry.id;
+  if (quest.progress >= quest.required) {
+    quest.completed = true;
+    addLog(game, `${quest.name} 完成，奖励 ${getCard(catalog, quest.rewardCardId).name}。`);
+    addCardToHand(game, seat, createInstance(quest.rewardCardId, seat), catalog, `获得了任务奖励 ${getCard(catalog, quest.rewardCardId).name}。`);
+  }
+}
+
+function returnFriendlyMinionToHand(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string, costAdjustment: number): void {
+  if (!target || target.type !== "minion" || target.seat !== seat) throw new Error(`${sourceName} 需要选择一个友方随从。`);
+  const player = game.players[seat];
+  const index = player.board.findIndex((minion) => minion.instanceId === target.instanceId);
+  if (index < 0) throw new Error(`${sourceName} 的目标已经离开战场。`);
+  const [minion] = player.board.splice(index, 1);
+  const card = getCard(catalog, minion.cardId);
+  const returned = createInstance(minion.cardId, seat);
+  if (costAdjustment !== 0) returned.costOverride = Math.max(0, card.cost + costAdjustment);
+  addCardToHand(game, seat, returned, catalog, `${sourceName} 将 ${card.name} 移回了手牌。`);
+}
+
+function addRandomOpponentClassCard(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const opponentClass = game.players[other(seat)].class;
+  const pool = [...catalog.values()].filter((card) => card.collectible && card.type !== "hero_power" && card.class === opponentClass);
+  if (pool.length === 0) {
+    addLog(game, `${sourceName} 没有找到对手职业的可生成卡牌。`);
+    return;
+  }
+  const random = rng(game.seed + game.turn * 887 + seat * 131 + pool.length + game.logs.length);
+  const picked = pool[Math.floor(random() * pool.length)];
+  addCardToHand(game, seat, createInstance(picked.id, seat), catalog, `${sourceName} 获得了对手职业卡牌 ${picked.name}。`);
+}
+
+function maybeSummonPatches(game: GameState, seat: Seat, playedCard: CardDefinition, catalog: Map<string, CardDefinition>): void {
+  if (!hasRace(playedCard, "PIRATE") || hasRule(playedCard, "rogue_patches")) return;
+  const player = game.players[seat];
+  if (occupiedBoardSlots(player) >= GAME_RULES.maxBoardSize) return;
+  const index = player.deck.findIndex((instance) => instance.cardId === "quest_rogue_patches");
+  if (index < 0) return;
+  const [patches] = player.deck.splice(index, 1);
+  const card = getCard(catalog, patches.cardId);
+  const minion = createBoardMinion(applyCrystalCoreToInstance(game, seat, patches, catalog), card, game.turn);
+  player.board.push(minion);
+  addLog(game, `${card.name} 从牌库中冲上了战场。`);
+}
+
+function backstab(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion") throw new Error(`${sourceName} 需要选择一个随从。`);
+  const minion = findMinion(game, target);
+  if (!minion || minion.health < minion.maxHealth) throw new Error(`${sourceName} 只能以未受伤的随从为目标。`);
+  dealDamage(game, target, 2, seat, catalog, false);
+}
+
+function eviscerate(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target) throw new Error(`${sourceName} 需要选择一个目标。`);
+  const amount = game.players[seat].comboActiveForCurrentCard ? 4 : 2;
+  dealDamage(game, target, amount, seat, catalog, false);
+  addLog(game, `${sourceName} 造成了 ${amount} 点伤害。`);
+}
+
+function mimicPod(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  const drawn = player.deck.shift();
+  if (!drawn) {
+    drawCards(game, seat, 1, catalog, true);
+    return;
+  }
+  countCeaselessEvent(game, "抽牌");
+  const handCard = applyCrystalCoreToInstance(game, seat, { ...drawn, drawnTurn: game.turn }, catalog);
+  addCardToHand(game, seat, handCard, catalog, `${sourceName} 抽到了 ${getCard(catalog, drawn.cardId).name}。`);
+  addCardToHand(game, seat, cloneGeneratedChoiceOption(handCard, seat), catalog, `${sourceName} 复制了 ${getCard(catalog, drawn.cardId).name}。`);
+}
+
+function addFlameElementals(game: GameState, seat: Seat, amount: number, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  for (let index = 0; index < amount; index += 1) {
+    addCardToHand(game, seat, createInstance("quest_rogue_flame_elemental", seat), catalog, `${sourceName} 产生了 ${getCard(catalog, "quest_rogue_flame_elemental").name}。`);
+  }
+}
+
+function activateCrystalCore(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  player.crystalCoreActive = true;
+  for (const minion of player.board) setBoardMinionToCrystalCore(minion);
+  for (const instance of player.hand) applyCrystalCoreToInstance(game, seat, instance, catalog);
+  for (const instance of player.deck) applyCrystalCoreToInstance(game, seat, instance, catalog);
+  addLog(game, `${sourceName} 生效：本局对战剩余时间内，${player.nickname} 的随从变为5/5。`);
+}
+
+function applyCrystalCoreToInstance(game: GameState, seat: Seat, instance: CardInstance, catalog: Map<string, CardDefinition>): CardInstance {
+  if (!game.players[seat].crystalCoreActive) return instance;
+  const card = getCard(catalog, instance.cardId);
+  if (card.type !== "minion") return instance;
+  instance.attackOverride = 5;
+  instance.healthOverride = 5;
+  return instance;
+}
+
+function setBoardMinionToCrystalCore(minion: BoardMinion): void {
+  minion.attack = 5;
+  minion.health = 5;
+  minion.maxHealth = 5;
+  minion.attackOverride = 5;
+  minion.healthOverride = 5;
 }
 
 function twilightTorrent(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
@@ -2411,6 +2596,8 @@ function startTurn(game: GameState, seat: Seat, catalog: Map<string, CardDefinit
   player.hero.heroPowerUsed = false;
   player.hero.attacksThisTurn = 0;
   player.hero.temporaryAttack = 0;
+  player.cardsPlayedThisTurn = 0;
+  delete player.comboActiveForCurrentCard;
   rollRenoBullet(game, seat, catalog);
   tickAvianaCountdown(game, seat);
   transformChameleosInHand(game, seat, catalog);
@@ -2481,6 +2668,8 @@ function advanceStartTurnQueue(game: GameState, catalog: Map<string, CardDefinit
 function expireTurnEffects(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
   const player = game.players[seat];
   player.hero.temporaryAttack = 0;
+  delete player.nextSpellDiscount;
+  delete player.comboActiveForCurrentCard;
   for (const minion of player.board) {
     if (minion.temporaryAttack > 0) {
       minion.attack -= minion.temporaryAttack;
@@ -2585,7 +2774,7 @@ function drawCards(game: GameState, seat: Seat, amount: number, catalog: Map<str
       countCeaselessEvent(game, "卡牌被摧毁");
       if (withLog) addLog(game, `${getCard(catalog, drawn.cardId).name} 因手牌已满被弃置。`);
     } else {
-      const handCard = { ...drawn, drawnTurn: game.turn };
+      const handCard = applyCrystalCoreToInstance(game, seat, { ...drawn, drawnTurn: game.turn }, catalog);
       if (handCard.cardId === "reno_priest_chameleos") handCard.chameleos = true;
       player.hand.push(handCard);
       if (withLog) addLog(game, `${player.nickname} 抽了一张牌。`);
@@ -2629,7 +2818,7 @@ function summon(game: GameState, seat: Seat, cardId: string, amount: number, cat
   if (card.type !== "minion") throw new Error("只能召唤随从。");
   const player = game.players[seat];
   for (let index = 0; index < amount && occupiedBoardSlots(player) < GAME_RULES.maxBoardSize; index += 1) {
-    const minion = createBoardMinion(createInstance(cardId, seat), card, game.turn);
+    const minion = createBoardMinion(applyCrystalCoreToInstance(game, seat, createInstance(cardId, seat), catalog), card, game.turn);
     player.board.push(minion);
     addLog(game, `${player.nickname} 召唤了 ${card.name}。`);
   }
@@ -2746,6 +2935,7 @@ function cleanupDeaths(game: GameState, catalog: Map<string, CardDefinition>): v
         if (!minion.silenced) applyEffects(game, { sourceCard: card, sourceOwner: player.seat, trigger: "deathrattle" }, catalog);
         if (!minion.silenced && hasRule(card, "dragon_seeded_green_drake")) addRandomDragonToHand(game, player.seat, catalog, card.name, -2);
         if (!minion.silenced && hasRule(card, "dragon_bone_drake")) addRandomDragonToHand(game, player.seat, catalog, card.name);
+        if (!minion.silenced && hasRule(card, "rogue_igneous_elemental")) addFlameElementals(game, player.seat, 2, catalog, card.name);
       }
       changed = true;
     }
@@ -2927,7 +3117,10 @@ function cardPlayCost(game: GameState, seat: Seat, instance: CardInstance, card:
     : card.type === "minion" && player.board.some((minion) => !minion.silenced && hasRule(getCard(catalog, minion.cardId), "dragon_aviana"))
       ? 1
       : dynamicCost;
-  const cost = baseCost + tax;
+  const discount = card.type === "spell" && player.nextSpellDiscount?.throughTurn === game.turn
+    ? player.nextSpellDiscount.amount
+    : 0;
+  const cost = Math.max(0, baseCost + tax - discount);
   return opponentHasRuleOnBoard(game, seat, "razorscale", catalog) ? Math.max(cost, 2) : cost;
 }
 
@@ -2967,13 +3160,14 @@ function other(seat: Seat): Seat {
   return seat === 0 ? 1 : 0;
 }
 
-function addLog(game: GameState, message: string): void {
+function addLog(game: GameState, message: string): GameLogEntry {
   const entry: GameLogEntry = {
     id: game.logs.length + 1,
     at: new Date().toISOString(),
     message
   };
   game.logs = [...game.logs.slice(-80), entry];
+  return entry;
 }
 
 function rng(seed: number): () => number {

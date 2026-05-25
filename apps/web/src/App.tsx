@@ -1,4 +1,4 @@
-import { Ban, CheckCircle2, DoorOpen, Hammer, LogIn, Plus, RefreshCcw, Save, Shield, Swords, Trash2, Upload, WandSparkles } from "lucide-react";
+import { Ban, CheckCircle2, DoorOpen, Hammer, LogIn, Plus, RefreshCcw, Save, Shield, Snowflake, Swords, Trash2, Upload, WandSparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { io, type Socket } from "socket.io-client";
@@ -416,7 +416,8 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
   const isTurn = game.phase === "playing" && game.currentPlayer === game.viewerSeat && !hasBlockingChoice;
   const heroPowerCard = cardMap.get(self.hero.heroPowerCardId ?? `hero_power_${self.class}`);
   const heroPowerCost = heroPowerPlayCost(self, heroPowerCard, cardMap);
-  const canHeroAttack = isTurn && heroAttackValue(self) > 0 && self.hero.attacksThisTurn === 0;
+  const selfHeroFrozen = (self.hero.frozenUntilTurn ?? -1) >= game.turn;
+  const canHeroAttack = isTurn && heroAttackValue(self) > 0 && self.hero.attacksThisTurn === 0 && !selfHeroFrozen;
   const pendingChoiceCard = pending?.kind === "choice"
     ? cardMap.get(choiceForSelf?.options.find((option) => option.instanceId === pending.optionInstanceId)?.cardId ?? "")
     : undefined;
@@ -488,12 +489,12 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
             {opponent.hand.map((_, index) => <div key={index} className="card-back">?</div>)}
           </div>
 
-          <HeroBox label="对手" player={opponent} active={game.currentPlayer === opponent.seat} targetable={Boolean(pending)} onClick={() => chooseTarget({ type: "hero", seat: opponent.seat })} />
+          <HeroBox label="对手" player={opponent} active={game.currentPlayer === opponent.seat} targetable={Boolean(pending)} turn={game.turn} cardMap={cardMap} onClick={() => chooseTarget({ type: "hero", seat: opponent.seat })} />
 
           <div className="board-row opponent-board">
             {(opponent.specials ?? []).map((special) => <SpecialTile key={special.instanceId} special={special} card={cardMap.get(special.cardId)} />)}
             {opponent.locations.map((location) => <LocationTile key={location.instanceId} location={location} card={cardMap.get(location.cardId)} cooldown={location.readyTurn > game.turn} targetable={false} />)}
-            {opponent.board.map((minion) => <MinionTile key={minion.instanceId} minion={minion} card={cardMap.get(minion.cardId)} targetable={Boolean(pending)} onClick={() => chooseTarget({ type: "minion", seat: opponent.seat, instanceId: minion.instanceId })} />)}
+            {opponent.board.map((minion) => <MinionTile key={minion.instanceId} minion={minion} card={cardMap.get(minion.cardId)} turn={game.turn} targetable={Boolean(pending)} onClick={() => chooseTarget({ type: "minion", seat: opponent.seat, instanceId: minion.instanceId })} />)}
           </div>
 
           <div className="center-line">
@@ -521,7 +522,7 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
               const card = cardMap.get(minion.cardId);
               const abilityReady = titanAbilityReady(minion, card, game.turn, isTurn);
               const attackStatus = minionAttackStatus(minion, card, game.turn, isTurn);
-              return <MinionTile key={minion.instanceId} minion={minion} card={card} attackStatus={attackStatus} targetable={Boolean(pending)} onClick={() => {
+              return <MinionTile key={minion.instanceId} minion={minion} card={card} attackStatus={attackStatus} turn={game.turn} targetable={Boolean(pending)} onClick={() => {
                 if (pending) chooseTarget({ type: "minion", seat: self.seat, instanceId: minion.instanceId });
                 else if (abilityReady) send({ type: "use_titan_ability", minionInstanceId: minion.instanceId }).catch(showError(setNotice));
                 else if (attackStatus.ready) setPending({ kind: "attack", source: { type: "minion", seat: self.seat, instanceId: minion.instanceId } });
@@ -529,7 +530,7 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
             })}
           </div>
 
-          <HeroBox label="你" player={self} active={game.currentPlayer === self.seat} targetable={Boolean(pending)} onClick={() => chooseTarget({ type: "hero", seat: self.seat })} />
+          <HeroBox label="你" player={self} active={game.currentPlayer === self.seat} targetable={Boolean(pending)} turn={game.turn} cardMap={cardMap} onClick={() => chooseTarget({ type: "hero", seat: self.seat })} />
 
           <div className="hand-row" style={handRowStyle(self.hand.length)}>
             {self.hand.map((instance, index) => {
@@ -641,9 +642,29 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
   );
 }
 
-function HeroBox({ label, player, active, targetable, onClick }: { label: string; player: PublicGameState["players"][number]; active: boolean; targetable?: boolean; onClick: () => void }) {
+function HeroBox({ label, player, active, targetable, turn, cardMap, onClick }: { label: string; player: PublicGameState["players"][number]; active: boolean; targetable?: boolean; turn: number; cardMap: Map<string, CardDefinition>; onClick: () => void }) {
+  const frozen = (player.hero.frozenUntilTurn ?? -1) >= turn;
+  const secrets = player.secrets ?? [];
   return (
-    <button className={`hero-box ${active ? "active" : ""} ${targetable ? "targetable" : ""}`} onClick={onClick}>
+    <button className={`hero-box ${active ? "active" : ""} ${targetable ? "targetable" : ""} ${frozen ? "frozen" : ""}`} onClick={onClick}>
+      {secrets.length > 0 && (
+        <span className="secret-row" aria-label={`${secrets.length} 个奥秘`}>
+          {secrets.map((secret) => {
+            const card = secret.cardId ? cardMap.get(secret.cardId) : undefined;
+            return (
+              <span key={secret.instanceId} className={`secret-orb ${card ? "known" : "hidden"}`} title={card ? card.name : "奥秘"} onClick={(event) => event.stopPropagation()}>
+                ?
+                {card && (
+                  <span className="secret-tooltip">
+                    <strong>{card.name}</strong>
+                    <small>{card.text}</small>
+                  </span>
+                )}
+              </span>
+            );
+          })}
+        </span>
+      )}
       <span className="hero-name">{label} · {player.nickname}</span>
       <div className="hero-portrait">{CLASS_LABELS[player.class][0]}</div>
       <strong className="hero-health">{player.hero.health}</strong>
@@ -652,6 +673,7 @@ function HeroBox({ label, player, active, targetable, onClick }: { label: string
         {player.hero.armor > 0 && <small>护甲 {player.hero.armor}</small>}
         {player.hero.temporaryAttack > 0 && <small>攻击 +{player.hero.temporaryAttack}</small>}
         {player.hero.weapon && <small>武器 {player.hero.weapon.attack}/{player.hero.weapon.durability}</small>}
+        {frozen && <small className="hero-frozen-tag"><Snowflake size={12} /> 冻结</small>}
       </div>
     </button>
   );
@@ -690,17 +712,19 @@ function useBoardCardPreview(card?: CardDefinition) {
   return { clearPreview, previewPosition, schedulePreview };
 }
 
-function MinionTile({ minion, card, attackStatus, targetable, onClick }: { minion: PublicGameState["players"][number]["board"][number]; card?: CardDefinition; attackStatus?: { ready: boolean; label: string }; targetable?: boolean; onClick: () => void }) {
+function MinionTile({ minion, card, attackStatus, turn, targetable, onClick }: { minion: PublicGameState["players"][number]["board"][number]; card?: CardDefinition; attackStatus?: { ready: boolean; label: string }; turn: number; targetable?: boolean; onClick: () => void }) {
   const keywordText = minion.keywords.map(keywordLabel).join(" ");
   const { clearPreview, previewPosition, schedulePreview } = useBoardCardPreview(card);
+  const frozen = (minion.frozenUntilTurn ?? -1) >= turn;
 
   return (
-    <button className={`minion ${attackStatus?.ready ? "ready" : ""} ${targetable ? "targetable" : ""}`} onClick={onClick} onMouseEnter={schedulePreview} onMouseLeave={clearPreview} onBlur={clearPreview}>
+    <button className={`minion ${attackStatus?.ready ? "ready" : ""} ${targetable ? "targetable" : ""} ${frozen ? "frozen" : ""}`} onClick={onClick} onMouseEnter={schedulePreview} onMouseLeave={clearPreview} onBlur={clearPreview}>
       <div className="minion-art">{card?.assetUrl ? <img src={card.assetUrl} alt={card.name} /> : <span>{(card?.name ?? minion.cardId).slice(0, 1)}</span>}</div>
       <strong>{card?.name ?? minion.cardId}</strong>
       <div className="minion-stats"><b>{minion.attack}</b><b>{minion.health}</b></div>
       {keywordText && <small>{keywordText}</small>}
       {attackStatus && <em>{attackStatus.label}</em>}
+      {frozen && <span className="frozen-badge"><Snowflake size={12} /> 冻结</span>}
       {card && previewPosition && createPortal(
         <div className="board-card-detail-popover" style={{ left: previewPosition.left, top: previewPosition.top }} aria-hidden="true">
           <CardPreview card={card} attack={minion.attack} health={minion.health} className="board-card-preview-card" />

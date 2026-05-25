@@ -604,6 +604,80 @@ p {
   box-shadow: 0 0 24px rgba(143, 208, 169, 0.28), inset 0 0 28px rgba(143, 208, 169, 0.08);
 }
 
+.hero-box.frozen {
+  border-color: rgba(134, 214, 255, 0.82);
+  box-shadow: 0 0 26px rgba(96, 183, 232, 0.34), inset 0 0 32px rgba(151, 223, 255, 0.12);
+}
+
+.secret-row {
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  z-index: 8;
+  display: flex;
+  gap: 5px;
+  transform: translateX(-50%);
+}
+
+.secret-orb {
+  position: relative;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #fff7ce;
+  font-size: 15px;
+  font-weight: 950;
+  border: 2px solid rgba(255, 242, 177, 0.88);
+  background:
+    conic-gradient(from 20deg, #ff6b6b, #ffd166, #71d38a, #69b7ff, #ba88ff, #ff6b6b);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.45), inset 0 0 0 4px rgba(30, 19, 8, 0.74);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+}
+
+.secret-orb.hidden {
+  cursor: default;
+}
+
+.secret-orb.known {
+  cursor: help;
+}
+
+.secret-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  width: 210px;
+  z-index: 30;
+  display: none;
+  gap: 5px;
+  transform: translateX(-50%);
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 223, 146, 0.38);
+  border-radius: 8px;
+  background: rgba(20, 15, 12, 0.96);
+  color: #fff3d4;
+  text-align: left;
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.42);
+}
+
+.secret-orb.known:hover .secret-tooltip,
+.secret-orb.known:focus-within .secret-tooltip {
+  display: grid;
+}
+
+.secret-tooltip strong {
+  font-size: 13px;
+  line-height: 1.15;
+}
+
+.secret-tooltip small {
+  color: rgba(245, 239, 226, 0.76);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .hero-name {
   grid-column: 1 / 4;
   color: #ffe8b2;
@@ -665,6 +739,15 @@ p {
   padding: 2px 7px;
   color: #ffdf92;
   background: rgba(0, 0, 0, 0.22);
+}
+
+.hero-frozen-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border-color: rgba(132, 207, 255, 0.45) !important;
+  color: #bfeeff !important;
+  background: rgba(17, 69, 103, 0.42) !important;
 }
 
 .board-row {
@@ -1036,6 +1119,34 @@ p {
 .hero-box.targetable {
   outline: 3px solid rgba(255, 214, 103, 0.52);
   box-shadow: 0 0 28px rgba(255, 205, 85, 0.38), 0 12px 22px rgba(0, 0, 0, 0.42);
+}
+
+.minion.frozen {
+  border-color: rgba(132, 207, 255, 0.84);
+  background:
+    linear-gradient(180deg, rgba(63, 115, 137, 0.68), rgba(20, 36, 46, 0.96)),
+    linear-gradient(180deg, #344230, #171f17);
+  box-shadow: 0 0 22px rgba(116, 201, 255, 0.34), 0 12px 22px rgba(0, 0, 0, 0.42);
+}
+
+.frozen-badge {
+  position: absolute;
+  left: 50%;
+  top: 5px;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(187, 234, 255, 0.68);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: rgba(18, 76, 112, 0.82);
+  color: #d6f6ff;
+  font-size: 10px;
+  font-weight: 900;
+  box-shadow: 0 5px 12px rgba(0, 0, 0, 0.36);
+  pointer-events: none;
 }
 
 .special-site {

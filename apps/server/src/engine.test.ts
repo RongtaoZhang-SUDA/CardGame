@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CardDefinition, DeckDefinition } from "@dormstone/shared";
-import { applyGameAction, createGame } from "./engine.js";
+import { applyGameAction, createGame, toPublicGameState } from "./engine.js";
 import { sampleCards } from "./sampleCards.js";
 
 function deck(owner: string, deckClass: DeckDefinition["class"], cardIds: string[]): DeckDefinition {
@@ -178,69 +178,10 @@ describe("game engine", () => {
     expect(game.players[0].hand).toHaveLength(1);
   });
 
-  it("resolves Force of Nature plus Savage Roar as temporary burst", () => {
-    const game = createGame("ROAR", [
-      { nickname: "A", class: "druid", deck: deck("A", "druid", Array(30).fill("roar_chillwind_yeti")) },
-      { nickname: "B", class: "arcanist", deck: deck("B", "arcanist", Array(30).fill("neutral_squire")) }
-    ], sampleCards, 21);
-    game.phase = "playing";
-    game.turn = 4;
-    game.currentPlayer = 0;
-    game.players[0].mana = 10;
-    game.players[0].hand = [
-      { instanceId: "fon", cardId: "roar_force_of_nature", owner: 0, origin: "starting_deck" },
-      { instanceId: "roar", cardId: "roar_savage_roar", owner: 0, origin: "starting_deck" }
-    ];
-
-    applyGameAction(game, "A", { type: "play_card", handInstanceId: "fon" }, sampleCards);
-    applyGameAction(game, "A", { type: "play_card", handInstanceId: "roar" }, sampleCards);
-    expect(game.players[0].board).toHaveLength(3);
-    expect(game.players[0].board.every((minion) => minion.attack === 4 && minion.keywords.includes("charge"))).toBe(true);
-    expect(game.players[0].hero.temporaryAttack).toBe(2);
-
-    applyGameAction(game, "A", { type: "end_turn" }, sampleCards);
-    expect(game.players[0].board).toHaveLength(0);
-    expect(game.players[0].hero.temporaryAttack).toBe(0);
-  });
-
-  it("keeps Druid Choose One branches targeted", () => {
-    const game = createGame("WRATH", [
-      { nickname: "A", class: "druid", deck: deck("A", "druid", Array(30).fill("roar_chillwind_yeti")) },
-      { nickname: "B", class: "arcanist", deck: deck("B", "arcanist", Array(30).fill("neutral_guard")) }
-    ], sampleCards, 33);
-    game.phase = "playing";
-    game.turn = 2;
-    game.currentPlayer = 0;
-    game.players[0].mana = 2;
-    game.players[0].hand = [{ instanceId: "wrath", cardId: "roar_wrath", owner: 0, origin: "starting_deck" }];
-    game.players[1].board = [{
-      instanceId: "enemy_guard",
-      cardId: "neutral_guard",
-      owner: 1,
-      attack: 2,
-      health: 3,
-      maxHealth: 3,
-      keywords: ["taunt"],
-      exhausted: false,
-      summonedTurn: 0,
-      attacksThisTurn: 0,
-      silenced: false,
-      temporaryAttack: 0
-    }];
-
-    applyGameAction(game, "A", { type: "play_card", handInstanceId: "wrath" }, sampleCards);
-    const choice = game.pendingChoice!;
-    const damageOption = choice.options.find((option) => option.cardId === "roar_choice_wrath_damage")!;
-    applyGameAction(game, "A", { type: "choose", choiceId: choice.id, optionInstanceId: damageOption.instanceId, target: { type: "minion", seat: 1, instanceId: "enemy_guard" } }, sampleCards);
-
-    expect(game.pendingChoice).toBeUndefined();
-    expect(game.players[1].board).toHaveLength(0);
-  });
-
   it("makes cards cost at least two against Razorscale", () => {
     const game = createGame("RAZOR", [
       { nickname: "A", class: "priest", deck: deck("A", "priest", Array(30).fill("reno_priest_tight_lipped")) },
-      { nickname: "B", class: "druid", deck: deck("B", "druid", Array(30).fill("roar_chillwind_yeti")) }
+      { nickname: "B", class: "druid", deck: deck("B", "druid", Array(30).fill("neutral_squire")) }
     ], sampleCards, 45);
     game.phase = "playing";
     game.turn = 1;
@@ -283,7 +224,7 @@ describe("game engine", () => {
   it("lets Raza discount hero powers and Shadowreaper replace Lesser Heal", () => {
     const game = createGame("SHADOW", [
       { nickname: "A", class: "priest", deck: deck("A", "priest", Array(30).fill("neutral_squire")) },
-      { nickname: "B", class: "druid", deck: deck("B", "druid", Array(30).fill("roar_chillwind_yeti")) }
+      { nickname: "B", class: "druid", deck: deck("B", "druid", Array(30).fill("neutral_squire")) }
     ], sampleCards, 51);
     game.phase = "playing";
     game.turn = 8;
@@ -826,5 +767,166 @@ describe("game engine", () => {
     expect(game.players[0].mana).toBe(3);
     expect(game.players[0].maxMana).toBe(2);
     expect(game.players[0].graveyard).toContain("coin");
+  });
+
+  it("keeps mage secrets hidden until they trigger", () => {
+    const game = createGame("SECRETS", [
+      { nickname: "A", class: "mage", deck: deck("A", "mage", Array(30).fill("freeze_mage_ice_barrier")) },
+      { nickname: "B", class: "druid", deck: deck("B", "druid", Array(30).fill("neutral_squire")) }
+    ], sampleCards, 67);
+    game.phase = "playing";
+    game.turn = 3;
+    game.currentPlayer = 0;
+    game.players[0].mana = 3;
+    game.players[0].hand = [{ instanceId: "barrier", cardId: "freeze_mage_ice_barrier", owner: 0, origin: "starting_deck" }];
+
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "barrier" }, sampleCards);
+
+    expect(game.players[0].secrets).toHaveLength(1);
+    expect(game.players[0].graveyard).not.toContain("freeze_mage_ice_barrier");
+    expect(game.logs.at(-1)?.message).not.toContain("寒冰护体");
+    expect(toPublicGameState(game, "A").players[0].secrets[0].cardId).toBe("freeze_mage_ice_barrier");
+    expect(toPublicGameState(game, "B").players[0].secrets[0].hidden).toBe(true);
+    expect(toPublicGameState(game, "B").players[0].secrets[0].cardId).toBeUndefined();
+
+    game.currentPlayer = 1;
+    game.players[1].board.push({
+      instanceId: "attacker",
+      cardId: "neutral_squire",
+      owner: 1,
+      attack: 1,
+      health: 2,
+      maxHealth: 2,
+      keywords: [],
+      exhausted: false,
+      summonedTurn: 0,
+      attacksThisTurn: 0,
+      silenced: false,
+      temporaryAttack: 0
+    });
+    applyGameAction(game, "B", { type: "attack", source: { type: "minion", seat: 1, instanceId: "attacker" }, target: { type: "hero", seat: 0 } }, sampleCards);
+
+    expect(game.players[0].secrets).toHaveLength(0);
+    expect(game.players[0].graveyard).toContain("freeze_mage_ice_barrier");
+    expect(game.players[0].hero.armor).toBe(7);
+    expect(game.logs.some((entry) => entry.message.includes("寒冰护体触发"))).toBe(true);
+  });
+
+  it("prevents lethal damage with Ice Block and grants same-turn immunity", () => {
+    const game = createGame("ICEBLOCK", [
+      { nickname: "A", class: "mage", deck: deck("A", "mage", Array(30).fill("neutral_squire")) },
+      { nickname: "B", class: "mage", deck: deck("B", "mage", Array(30).fill("freeze_mage_fireball")) }
+    ], sampleCards, 68);
+    game.phase = "playing";
+    game.turn = 6;
+    game.currentPlayer = 1;
+    game.players[0].hero.health = 5;
+    game.players[0].secrets = [{ instanceId: "block", cardId: "freeze_mage_ice_block", owner: 0, origin: "starting_deck" }];
+    game.players[1].mana = 6;
+    game.players[1].hand = [{ instanceId: "fireball", cardId: "freeze_mage_fireball", owner: 1, origin: "starting_deck" }];
+
+    applyGameAction(game, "B", { type: "play_card", handInstanceId: "fireball", target: { type: "hero", seat: 0 } }, sampleCards);
+
+    expect(game.players[0].hero.health).toBe(5);
+    expect(game.players[0].hero.immuneUntilTurn).toBe(6);
+    expect(game.players[0].secrets).toHaveLength(0);
+    expect(game.logs.some((entry) => entry.message.includes("寒冰屏障触发"))).toBe(true);
+
+    applyGameAction(game, "B", { type: "hero_power", target: { type: "hero", seat: 0 } }, sampleCards);
+    expect(game.players[0].hero.health).toBe(5);
+  });
+
+  it("freezes heroes and blocks frozen hero attacks", () => {
+    const game = createGame("FREEZEHERO", [
+      { nickname: "A", class: "mage", deck: deck("A", "mage", Array(30).fill("freeze_mage_frostbolt")) },
+      { nickname: "B", class: "druid", deck: deck("B", "druid", Array(30).fill("neutral_squire")) }
+    ], sampleCards, 69);
+    game.phase = "playing";
+    game.turn = 4;
+    game.currentPlayer = 0;
+    game.players[0].mana = 2;
+    game.players[0].hand = [{ instanceId: "frostbolt", cardId: "freeze_mage_frostbolt", owner: 0, origin: "starting_deck" }];
+
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "frostbolt", target: { type: "hero", seat: 1 } }, sampleCards);
+
+    expect(game.players[1].hero.frozenUntilTurn).toBe(5);
+    expect(game.players[1].hero.health).toBe(27);
+
+    game.turn = 5;
+    game.currentPlayer = 1;
+    game.players[1].hero.temporaryAttack = 1;
+    expect(() => applyGameAction(game, "B", { type: "attack", source: { type: "hero", seat: 1 }, target: { type: "hero", seat: 0 } }, sampleCards)).toThrow("英雄被冻结");
+  });
+
+  it("resolves Doomsayer, Acolyte of Pain, Polymorph, and Blizzard", () => {
+    const game = createGame("FREEZEMAGEKIT", [
+      { nickname: "A", class: "mage", deck: deck("A", "mage", Array(30).fill("neutral_squire")) },
+      { nickname: "B", class: "mage", deck: deck("B", "mage", Array(30).fill("neutral_squire")) }
+    ], sampleCards, 70);
+    game.phase = "playing";
+    game.turn = 7;
+    game.currentPlayer = 0;
+    game.players[0].mana = 10;
+    game.players[0].hand = [
+      { instanceId: "poly", cardId: "freeze_mage_polymorph", owner: 0, origin: "starting_deck" },
+      { instanceId: "blizzard", cardId: "freeze_mage_blizzard", owner: 0, origin: "starting_deck" }
+    ];
+    game.players[0].board.push({
+      instanceId: "acolyte",
+      cardId: "freeze_mage_acolyte_of_pain",
+      owner: 0,
+      attack: 1,
+      health: 4,
+      maxHealth: 4,
+      keywords: [],
+      exhausted: false,
+      summonedTurn: 0,
+      attacksThisTurn: 0,
+      silenced: false,
+      temporaryAttack: 0
+    });
+    game.players[1].board.push({
+      instanceId: "doomsayer",
+      cardId: "freeze_mage_doomsayer",
+      owner: 1,
+      attack: 0,
+      health: 7,
+      maxHealth: 7,
+      keywords: [],
+      exhausted: false,
+      summonedTurn: 0,
+      attacksThisTurn: 0,
+      silenced: false,
+      temporaryAttack: 0
+    });
+    game.players[1].board.push({
+      instanceId: "target",
+      cardId: "neutral_colossus",
+      owner: 1,
+      attack: 7,
+      health: 7,
+      maxHealth: 7,
+      keywords: [],
+      exhausted: false,
+      summonedTurn: 0,
+      attacksThisTurn: 0,
+      silenced: false,
+      temporaryAttack: 0
+    });
+
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "poly", target: { type: "minion", seat: 1, instanceId: "target" } }, sampleCards);
+    expect(game.players[1].board.find((minion) => minion.instanceId === "target")?.cardId).toBe("freeze_token_sheep");
+
+    const handBeforeDamage = game.players[0].hand.length;
+    applyGameAction(game, "A", { type: "hero_power", target: { type: "minion", seat: 0, instanceId: "acolyte" } }, sampleCards);
+    expect(game.players[0].hand.length).toBe(handBeforeDamage + 1);
+
+    game.players[0].mana = 6;
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "blizzard" }, sampleCards);
+    expect(game.players[1].board.every((minion) => (minion.frozenUntilTurn ?? -1) >= game.turn)).toBe(true);
+
+    applyGameAction(game, "A", { type: "end_turn" }, sampleCards);
+    expect(game.players[0].board).toHaveLength(0);
+    expect(game.players[1].board).toHaveLength(0);
   });
 });

@@ -117,7 +117,7 @@ describe("Renathal highlander priest preset", () => {
     ]);
     const game = createGame("YSERA", [
       { nickname: "A", class: "priest", deck: priestDeck },
-      { nickname: "B", class: "druid", deck: deck("B", "druid", Array(30).fill("roar_chillwind_yeti")) }
+      { nickname: "B", class: "druid", deck: deck("B", "druid", Array(30).fill("neutral_squire")) }
     ], sampleCards, 404);
 
     expect(game.players[0].manaCap).toBe(15);

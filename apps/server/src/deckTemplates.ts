@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { CLASS_LABELS, GAME_RULES, HERO_CLASS_PROFILES, legalCardsForClass, type CardDefinition, type CollectibleClass, type DeckTemplate } from "@dormstone/shared";
 import { dragonHighlanderDruidTemplate } from "./dragonHighlanderDruid.js";
-import { forceRoarDruidTemplate } from "./forceRoarDruid.js";
+import { freezeMageTemplate } from "./freezeMage.js";
 import { renathalPriestTemplate } from "./renathalPriest.js";
 
 interface CsvDeckRow {
@@ -105,7 +105,7 @@ function addDeckCopies(cardIds: string[], chosenCounts: Map<string, number>, car
 }
 
 function loadDeckTemplates(): DeckTemplate[] {
-  return [renathalPriestTemplate, dragonHighlanderDruidTemplate, forceRoarDruidTemplate];
+  return [renathalPriestTemplate, dragonHighlanderDruidTemplate, freezeMageTemplate];
 }
 
 function rowToTemplate(row: CsvDeckRow): DeckTemplate {
@@ -260,7 +260,6 @@ function fameRank(fame: string): number {
 }
 
 const fallbackDeckData = [
-  ["1", "德鲁伊", "Druid", "咆哮德 / 自然之力咆哮德", "Force Roar Druid", "经典至地精大战侏儒", "狂野怀旧", "中速连击", "中速,连击,斩杀", "S", "3", "5", "自然体系；铺场组件；爆发增益", "Nature package; board tokens; burst buffs", "前期站场，中期累积资源，后期用群体增益完成爆发。"],
   ["2", "德鲁伊", "Druid", "青玉德", "Jade Druid", "加基森至冰封王座", "狂野怀旧", "成长控制", "成长,资源,后期", "S", "4", "5", "青玉体系；成长组件；护甲回复", "Jade package; ramp tools; armor recovery", "通过法力成长和无限资源压垮慢速对手。"],
   ["3", "德鲁伊", "Druid", "超生德 / Token 德", "Token Druid", "多个版本", "狂野/休闲", "铺场快攻", "铺场,快攻,增益", "A", "4", "4", "低费衍生物；群体增益；自然法术", "Low-cost tokens; board buffs; nature spells", "快速制造横向场面，再用增益滚雪球。"],
   ["4", "德鲁伊", "Druid", "墙德 / 嘲讽德", "Taunt Druid", "女巫森林前后", "狂野怀旧", "防守复活", "嘲讽,防守,复活", "A", "3", "4", "高生命嘲讽；复活组件；护甲", "High-health taunts; revival tools; armor", "用厚墙拖住节奏，再以大随从反推。"],

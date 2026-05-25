@@ -40,19 +40,6 @@ export type CardRuleTag =
   | "dirty_rat"
   | "reno_jackson"
   | "razorscale"
-  | "savage_roar"
-  | "force_of_nature"
-  | "wild_growth"
-  | "swipe"
-  | "harrison_jones"
-  | "big_game_hunter"
-  | "black_knight"
-  | "ragnaros"
-  | "cenarius_buff"
-  | "druid_claw_charge"
-  | "druid_claw_taunt"
-  | "ancient_war_attack"
-  | "ancient_war_taunt"
   | "priest_raise_dead"
   | "priest_chameleos"
   | "priest_mend"
@@ -173,7 +160,18 @@ export type CardRuleTag =
   | "dragon_aviana"
   | "dragon_eonar_draw"
   | "dragon_eonar_heal"
-  | "dragon_eonar_refresh";
+  | "dragon_eonar_refresh"
+  | "mage_ice_lance"
+  | "mage_arcane_missiles"
+  | "mage_frostbolt"
+  | "mage_doomsayer"
+  | "mage_secret_ice_block"
+  | "mage_frost_nova"
+  | "mage_secret_ice_barrier"
+  | "mage_acolyte_of_pain"
+  | "mage_polymorph"
+  | "mage_blizzard"
+  | "mage_alexstrasza";
 
 export type TargetKind = "none" | "selected" | "enemy_hero" | "own_hero" | "all_enemies" | "all_enemy_minions" | "all_minions" | "any_minion" | "friendly_minion" | "enemy_minion";
 
@@ -372,6 +370,8 @@ export interface HeroState {
   maxHealth: number;
   armor: number;
   temporaryAttack: number;
+  frozenUntilTurn?: number;
+  immuneUntilTurn?: number;
   weapon?: WeaponState;
   attacksThisTurn: number;
   heroPowerUsed: boolean;
@@ -386,6 +386,7 @@ export interface PlayerGameState {
   hero: HeroState;
   deck: CardInstance[];
   hand: CardInstance[];
+  secrets: CardInstance[];
   sideboard: CardInstance[];
   board: BoardMinion[];
   locations: BoardLocation[];
@@ -423,10 +424,11 @@ export interface PublicCardInstance {
   forged?: boolean;
 }
 
-export interface PublicPlayerGameState extends Omit<PlayerGameState, "deck" | "hand" | "sideboard"> {
+export interface PublicPlayerGameState extends Omit<PlayerGameState, "deck" | "hand" | "sideboard" | "secrets"> {
   deckCount: number;
   sideboardCount: number;
   hand: PublicCardInstance[];
+  secrets: PublicCardInstance[];
 }
 
 export interface GameLogEntry {

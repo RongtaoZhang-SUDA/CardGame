@@ -149,6 +149,7 @@ export function toPublicGameState(game: GameState, viewerNickname: string): Publ
     deckCount: player.deck.length,
     sideboard: undefined,
     sideboardCount: player.sideboard?.length ?? 0,
+    secrets: player.secrets.map((card) => (player.seat === viewerSeat ? card : { instanceId: card.instanceId, owner: card.owner, hidden: true })),
     hand: player.hand.map((card) => (player.seat === viewerSeat ? card : { instanceId: card.instanceId, owner: card.owner, hidden: true }))
   })) as unknown as PublicGameState["players"];
   const pendingChoice = game.pendingChoice
@@ -179,6 +180,7 @@ function createPlayerState(seat: Seat, input: GamePlayerInput, catalog: Map<stri
     },
     deck: input.deck.cardIds.map((cardId) => createInstance(cardId, seat, "starting_deck")),
     hand: [],
+    secrets: [],
     sideboard: (input.deck.sideboardCardIds ?? []).map((cardId) => {
       if (!catalog.has(cardId)) throw new Error(`备牌包含未知卡牌：${cardId}`);
       return createInstance(cardId, seat, "sideboard");
@@ -246,6 +248,7 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
   if (card.type !== "location" && cardNeedsTarget(card) && !target) throw new Error("这张牌需要选择目标。");
 
   if ((card.type === "minion" || card.type === "location") && occupiedBoardSlots(player) >= GAME_RULES.maxBoardSize) throw new Error("战场已满。");
+  if (isSecretCard(card) && player.secrets.some((secret) => secret.cardId === card.id)) throw new Error("不能重复挂上同一个奥秘。");
   player.mana -= cost;
   player.hand.splice(handIndex, 1);
   game.ceaselessTrackingStarted = true;
@@ -253,6 +256,11 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
   if (card.type === "spell") player.spellsCastThisGame = (player.spellsCastThisGame ?? 0) + 1;
   if (counterPlayedCard(game, seat, card, catalog)) {
     player.graveyard.push(card.id);
+    return;
+  }
+  if (isSecretCard(card)) {
+    player.secrets.push(instance);
+    addLog(game, `${player.nickname} 设下了一个奥秘。`);
     return;
   }
 
@@ -399,18 +407,6 @@ function applyRuleBattlecry(game: GameState, seat: Seat, instance: CardInstance,
     if (hasDuplicateCardIds(player.deck)) addLog(game, `${card.name} 检查后发现牌库仍有重复牌。`);
     else heal(game, { type: "hero", seat }, player.hero.maxHealth, catalog);
   }
-  if (hasRule(card, "harrison_jones")) {
-    const weapon = enemy.hero.weapon;
-    if (!weapon) addLog(game, `${card.name} 没有找到可摧毁的敌方武器。`);
-    else {
-      const durability = weapon.durability;
-      destroyHeroWeapon(game, other(seat), catalog, card.name);
-      addLog(game, `${card.name} 摧毁了 ${enemy.nickname} 的武器，并让 ${player.nickname} 抽 ${durability} 张牌。`);
-      drawCards(game, seat, durability, catalog, true);
-    }
-  }
-  if (hasRule(card, "big_game_hunter")) destroyLargeMinion(game, target, catalog, card.name);
-  if (hasRule(card, "black_knight")) destroyEnemyTaunt(game, seat, target, catalog, card.name);
   if (hasRule(card, "priest_finley")) swapHandWithDeckBottom(game, seat, catalog, card.name);
   if (hasRule(card, "priest_zephrys")) addHighlanderAnswer(game, seat, catalog, card.name);
   if (hasRule(card, "priest_kaldorei_spirit")) buffKaldoreiSpirit(game, seat, card, catalog);
@@ -469,28 +465,11 @@ function applyRuleBattlecry(game: GameState, seat: Seat, instance: CardInstance,
   }
   if (hasRule(card, "dragon_doomkin")) stealEmptyMana(game, seat, card.name);
   if (hasRule(card, "dragon_rheastrasza")) summonPureNest(game, seat, catalog, card.name);
+  if (hasRule(card, "mage_alexstrasza")) alexstraszaClassic(game, target, catalog, card.name);
 }
 
 function applyRulePlay(game: GameState, seat: Seat, instance: CardInstance, card: CardDefinition, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
   const player = game.players[seat];
-  if (hasRule(card, "savage_roar")) {
-    player.hero.temporaryAttack += 2;
-    for (const minion of player.board) {
-      minion.attack += 2;
-      minion.temporaryAttack += 2;
-    }
-    addLog(game, `${player.nickname} 的所有角色本回合获得 +2 攻击力。`);
-  }
-  if (hasRule(card, "force_of_nature")) summonForceTreants(game, seat, catalog);
-  if (hasRule(card, "wild_growth")) {
-    if (player.maxMana < (player.manaCap ?? GAME_RULES.maxMana)) {
-      gainEmptyMana(game, seat, 1, card.name);
-      addLog(game, `${player.nickname} 获得了一个空的法力水晶。`);
-    } else {
-      addCardToHand(game, seat, createInstance("roar_excess_mana", seat), catalog, "获得了一张过量法力。");
-    }
-  }
-  if (hasRule(card, "swipe")) swipe(game, seat, target, catalog);
   if (hasRule(card, "priest_raise_dead")) raiseDead(game, seat, catalog);
   if (hasRule(card, "priest_mend")) mend(game, seat, target, catalog, card.name);
   if (hasRule(card, "priest_power_word_barrier")) powerWordBarrier(game, seat, target, catalog, card.name);
@@ -527,6 +506,12 @@ function applyRulePlay(game: GameState, seat: Seat, instance: CardInstance, card
   if (hasRule(card, "dragon_overgrowth")) gainEmptyMana(game, seat, 2, card.name);
   if (hasRule(card, "dragon_broken_mirror")) brokenMirror(game, seat, target, catalog, card.name);
   if (hasRule(card, "dragon_guff")) becomeGuff(game, seat, catalog, card.name);
+  if (hasRule(card, "mage_ice_lance")) iceLance(game, seat, target, catalog, card);
+  if (hasRule(card, "mage_arcane_missiles")) arcaneMissiles(game, seat, card, catalog);
+  if (hasRule(card, "mage_frostbolt")) freezeTarget(game, target, catalog, card.name);
+  if (hasRule(card, "mage_frost_nova")) freezeEnemyMinions(game, seat, catalog, card.name);
+  if (hasRule(card, "mage_polymorph")) polymorph(game, target, catalog, card.name);
+  if (hasRule(card, "mage_blizzard")) blizzard(game, seat, card, catalog);
 }
 
 function applyRuleLocation(game: GameState, seat: Seat, card: CardDefinition, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
@@ -927,8 +912,93 @@ function brokenMirror(game: GameState, seat: Seat, target: TargetRef | undefined
 }
 
 function freezeEnemyMinions(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
-  for (const minion of game.players[other(seat)].board) minion.frozenUntilTurn = game.turn + 1;
+  for (const minion of game.players[other(seat)].board) freezeTarget(game, { type: "minion", seat: other(seat), instanceId: minion.instanceId }, catalog);
   addLog(game, `${sourceName} 冻结了敌方随从。`);
+}
+
+function freezeTarget(game: GameState, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName?: string): void {
+  if (!target) throw new Error(`${sourceName ?? "冻结效果"} 需要选择一个目标。`);
+  if (isUntouchableTarget(game, target)) throw new Error("这个随从无法成为目标。");
+  const untilTurn = game.turn + 1;
+  if (target.type === "hero") {
+    const hero = game.players[target.seat].hero;
+    hero.frozenUntilTurn = Math.max(hero.frozenUntilTurn ?? -1, untilTurn);
+  } else {
+    const minion = findMinion(game, target);
+    if (!minion) throw new Error("冻结目标已经离开战场。");
+    minion.frozenUntilTurn = Math.max(minion.frozenUntilTurn ?? -1, untilTurn);
+  }
+  if (sourceName) addLog(game, `${sourceName} 冻结了 ${targetName(game, target, catalog)}。`);
+}
+
+function isFrozen(game: GameState, target: TargetRef | undefined): boolean {
+  if (!target) return false;
+  if (target.type === "hero") return (game.players[target.seat].hero.frozenUntilTurn ?? -1) >= game.turn;
+  return (findMinion(game, target)?.frozenUntilTurn ?? -1) >= game.turn;
+}
+
+function iceLance(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, card: CardDefinition): void {
+  if (!target) throw new Error("冰枪术需要选择一个目标。");
+  if (isFrozen(game, target)) {
+    const damage = 4 + spellDamageBonus(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "play" });
+    dealDamage(game, target, damage, seat, catalog, keywordOnSource(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "play" }, "lifesteal"));
+  } else {
+    freezeTarget(game, target, catalog, card.name);
+  }
+}
+
+function arcaneMissiles(game: GameState, seat: Seat, card: CardDefinition, catalog: Map<string, CardDefinition>): void {
+  const missileCount = 3 + spellDamageBonus(game, { sourceCard: card, sourceOwner: seat, trigger: "play" });
+  const random = rng(game.seed + game.turn * 463 + seat * 97 + game.players[other(seat)].board.length);
+  for (let count = 0; count < missileCount; count += 1) {
+    const targets = [
+      { type: "hero" as const, seat: other(seat) },
+      ...touchableMinionTargets(game.players[other(seat)].board, other(seat))
+    ];
+    if (targets.length === 0) break;
+    dealDamage(game, targets[Math.floor(random() * targets.length)], 1, seat, catalog, false);
+    cleanupDeaths(game, catalog);
+  }
+  addLog(game, `${card.name} 随机分配了 ${missileCount} 点伤害。`);
+}
+
+function blizzard(game: GameState, seat: Seat, card: CardDefinition, catalog: Map<string, CardDefinition>): void {
+  const damage = 2 + spellDamageBonus(game, { sourceCard: card, sourceOwner: seat, trigger: "play" });
+  const targets = touchableMinionTargets(game.players[other(seat)].board, other(seat));
+  for (const target of targets) dealDamage(game, target, damage, seat, catalog, false);
+  for (const target of targets) {
+    if (findMinion(game, target)) freezeTarget(game, target, catalog);
+  }
+  addLog(game, `${card.name} 对所有敌方随从造成 ${damage} 点伤害并冻结。`);
+}
+
+function polymorph(game: GameState, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion") throw new Error(`${sourceName} 需要选择一个随从。`);
+  if (isUntouchableTarget(game, target)) throw new Error("这个随从无法成为目标。");
+  const minion = findMinion(game, target);
+  if (!minion) throw new Error("变形术的目标已经离开战场。");
+  minion.cardId = "freeze_token_sheep";
+  minion.attack = 1;
+  minion.health = 1;
+  minion.maxHealth = 1;
+  minion.keywords = [];
+  minion.silenced = false;
+  minion.temporaryAttack = 0;
+  minion.cannotAttack = false;
+  minion.untouchable = false;
+  delete minion.attackOverride;
+  delete minion.healthOverride;
+  delete minion.frozenUntilTurn;
+  delete minion.counterNextCardType;
+  delete minion.usedTitanAbilityCardIds;
+  delete minion.titanAbilityUsedTurn;
+  addLog(game, `${sourceName} 将目标变成了绵羊。`);
+}
+
+function alexstraszaClassic(game: GameState, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "hero") throw new Error(`${sourceName} 需要选择一个英雄。`);
+  game.players[target.seat].hero.health = Math.min(15, game.players[target.seat].hero.maxHealth);
+  addLog(game, `${sourceName} 将 ${targetName(game, target, catalog)} 的生命值变为15。`);
 }
 
 function recruitEnemyMinion(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
@@ -1142,40 +1212,6 @@ function pullRandomEnemyMinion(game: GameState, seat: Seat, catalog: Map<string,
 
 function applyRuleChoice(game: GameState, seat: Seat, optionCard: CardDefinition, sourceInstanceId: string | undefined, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
   const source = sourceInstanceId ? game.players[seat].board.find((minion) => minion.instanceId === sourceInstanceId) : undefined;
-  if (hasRule(optionCard, "druid_claw_charge")) {
-    if (!source) throw new Error("利爪德鲁伊已经不在战场。");
-    source.attack = 4;
-    source.health = Math.min(source.health, 4);
-    source.maxHealth = 4;
-    addKeyword(source, "charge");
-    source.exhausted = false;
-    addLog(game, `${getCard(catalog, source.cardId).name} 进入猎豹形态。`);
-  }
-  if (hasRule(optionCard, "druid_claw_taunt")) {
-    if (!source) throw new Error("利爪德鲁伊已经不在战场。");
-    source.attack = 4;
-    source.maxHealth = 6;
-    source.health = 6;
-    addKeyword(source, "taunt");
-    addLog(game, `${getCard(catalog, source.cardId).name} 进入熊形态。`);
-  }
-  if (hasRule(optionCard, "ancient_war_attack")) {
-    if (!source) throw new Error("战争古树已经不在战场。");
-    source.attack += 5;
-    addLog(game, `${getCard(catalog, source.cardId).name} 获得 +5 攻击力。`);
-  }
-  if (hasRule(optionCard, "ancient_war_taunt")) {
-    if (!source) throw new Error("战争古树已经不在战场。");
-    source.maxHealth += 5;
-    source.health += 5;
-    addKeyword(source, "taunt");
-    addLog(game, `${getCard(catalog, source.cardId).name} 获得 +5 生命值和嘲讽。`);
-  }
-  if (hasRule(optionCard, "cenarius_buff")) {
-    const others = game.players[seat].board.filter((minion) => minion.instanceId !== sourceInstanceId);
-    for (const minion of others) buff(game, { type: "minion", seat, instanceId: minion.instanceId }, 2, 2, catalog);
-    if (others.length === 0) addLog(game, `${optionCard.name} 没有可强化的其他友方随从。`);
-  }
   if (hasRule(optionCard, "priest_okani_minion") || hasRule(optionCard, "priest_okani_spell")) {
     if (!source) throw new Error("剑圣奥卡尼已经不在战场。");
     source.counterNextCardType = hasRule(optionCard, "priest_okani_minion") ? "minion" : "spell";
@@ -1220,47 +1256,6 @@ function applyRuleChoice(game: GameState, seat: Seat, optionCard: CardDefinition
     refreshMana(game, seat, game.players[seat].maxMana, optionCard.name);
     summon(game, seat, "dragon_token_eonar_tree", 1, catalog);
   }
-}
-
-function summonForceTreants(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
-  const card = getCard(catalog, "roar_token_treant_charge");
-  const player = game.players[seat];
-  let count = 0;
-  while (count < 3 && occupiedBoardSlots(player) < GAME_RULES.maxBoardSize) {
-    const treant = createBoardMinion(createInstance(card.id, seat), card, game.turn);
-    treant.expiresAtEndOfTurn = true;
-    player.board.push(treant);
-    count += 1;
-  }
-  addLog(game, `${player.nickname} 用自然之力召唤了 ${count} 个冲锋树人。`);
-}
-
-function swipe(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
-  if (!target || target.seat !== other(seat)) throw new Error("横扫需要选择一个敌方目标。");
-  const context: EffectContext = { sourceCard: getCard(catalog, "roar_swipe"), sourceOwner: seat, selectedTarget: target, trigger: "play" };
-  const damageBonus = spellDamageBonus(game, context);
-  dealDamage(game, target, 4 + damageBonus, seat, catalog, false);
-  const enemyTargets = [
-    { type: "hero" as const, seat: other(seat) },
-    ...game.players[other(seat)].board.map((minion) => ({ type: "minion" as const, seat: other(seat), instanceId: minion.instanceId }))
-  ];
-  for (const otherTarget of enemyTargets) {
-    if (!sameTarget(otherTarget, target)) dealDamage(game, otherTarget, 1 + damageBonus, seat, catalog, false);
-  }
-}
-
-function destroyLargeMinion(game: GameState, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
-  if (!target || target.type !== "minion") throw new Error(`${sourceName} 需要选择一个随从。`);
-  const minion = findMinion(game, target);
-  if (!minion || minion.attack < 7) throw new Error(`${sourceName} 只能消灭攻击力至少为 7 的随从。`);
-  destroy(game, target, catalog);
-}
-
-function destroyEnemyTaunt(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
-  if (!target || target.type !== "minion" || target.seat !== other(seat)) throw new Error(`${sourceName} 需要选择一个敌方嘲讽随从。`);
-  const minion = findMinion(game, target);
-  if (!minion?.keywords.includes("taunt")) throw new Error(`${sourceName} 只能消灭具有嘲讽的敌方随从。`);
-  destroy(game, target, catalog);
 }
 
 function raiseDead(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
@@ -2263,6 +2258,34 @@ function counterPlayedCard(game: GameState, seat: Seat, card: CardDefinition, ca
   return true;
 }
 
+function isSecretCard(card: CardDefinition): boolean {
+  return Boolean(card.rules?.some((rule) => rule === "mage_secret_ice_block" || rule === "mage_secret_ice_barrier"));
+}
+
+function triggerSecret(game: GameState, seat: Seat, rule: "mage_secret_ice_block" | "mage_secret_ice_barrier", catalog: Map<string, CardDefinition>): CardDefinition | undefined {
+  const player = game.players[seat];
+  const index = player.secrets.findIndex((secret) => hasRule(getCard(catalog, secret.cardId), rule));
+  if (index < 0) return undefined;
+  const [secret] = player.secrets.splice(index, 1);
+  player.graveyard.push(secret.cardId);
+  return getCard(catalog, secret.cardId);
+}
+
+function triggerIceBarrier(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
+  const secret = triggerSecret(game, seat, "mage_secret_ice_barrier", catalog);
+  if (!secret) return;
+  game.players[seat].hero.armor += 8;
+  addLog(game, `${secret.name}触发：${game.players[seat].nickname} 获得8点护甲。`);
+}
+
+function triggerIceBlock(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): boolean {
+  const secret = triggerSecret(game, seat, "mage_secret_ice_block", catalog);
+  if (!secret) return false;
+  game.players[seat].hero.immuneUntilTurn = game.turn;
+  addLog(game, `${secret.name}触发：防止了致命伤害，${game.players[seat].nickname} 本回合免疫。`);
+  return true;
+}
+
 function heroPower(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
   const player = game.players[seat];
   if (player.hero.heroPowerUsed) throw new Error("本回合已经使用过英雄技能。");
@@ -2292,6 +2315,7 @@ function attack(game: GameState, actorSeat: Seat, source: TargetRef, target: Tar
     const player = game.players[actorSeat];
     const weapon = player.hero.weapon;
     const heroAttack = (weapon?.attack ?? 0) + player.hero.temporaryAttack;
+    if ((player.hero.frozenUntilTurn ?? -1) >= game.turn) throw new Error("英雄被冻结，不能攻击。");
     if (heroAttack <= 0) throw new Error("英雄没有可用攻击力。");
     const heroAttackLimit = weapon?.keywords?.includes("windfury") ? 2 : 1;
     if (player.hero.attacksThisTurn >= heroAttackLimit) throw new Error("英雄本回合已经攻击过。");
@@ -2299,6 +2323,7 @@ function attack(game: GameState, actorSeat: Seat, source: TargetRef, target: Tar
     const adjacentTargets = weapon?.ignisWeapon?.adjacentDamage && target.type === "minion"
       ? adjacentMinionTargets(game, target)
       : [];
+    if (target.type === "hero") triggerIceBarrier(game, target.seat, catalog);
     dealDamage(game, target, heroAttack, actorSeat, catalog, Boolean(weapon?.keywords?.includes("lifesteal")));
     if (weapon?.keywords?.includes("poisonous") && target.type === "minion") {
       const poisoned = findMinion(game, target);
@@ -2318,6 +2343,7 @@ function attack(game: GameState, actorSeat: Seat, source: TargetRef, target: Tar
     if (!minion) throw new Error("攻击者不存在。");
     if (!canMinionAttack(minion, target, game.turn, catalog)) throw new Error("该随从现在不能攻击。");
     const defender = getTarget(game, target);
+    if (target.type === "hero") triggerIceBarrier(game, target.seat, catalog);
     dealDamage(game, target, minion.attack, actorSeat, catalog, minion.keywords.includes("lifesteal"));
     if (defender.kind === "minion") {
       dealDamage(game, source, defender.minion.attack, target.seat, catalog, defender.minion.keywords.includes("lifesteal"));
@@ -2389,6 +2415,7 @@ function startTurn(game: GameState, seat: Seat, catalog: Map<string, CardDefinit
   tickAvianaCountdown(game, seat);
   transformChameleosInHand(game, seat, catalog);
   transformHarmonicPopInHand(game, seat);
+  resolveStartTurnRules(game, seat, catalog);
   const handledStartChoices = beginStartTurnQueue(game, seat, catalog);
   for (const minion of player.board) {
     minion.exhausted = false;
@@ -2398,22 +2425,22 @@ function startTurn(game: GameState, seat: Seat, catalog: Map<string, CardDefinit
   addLog(game, `第 ${game.turn} 回合开始，轮到 ${player.nickname}。`);
 }
 
+function resolveStartTurnRules(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
+  const activeDoomsayers = game.players[seat].board.filter((minion) => !minion.silenced && hasRule(getCard(catalog, minion.cardId), "mage_doomsayer"));
+  if (activeDoomsayers.length === 0) return;
+  for (const player of game.players) {
+    for (const minion of player.board) minion.health = 0;
+  }
+  addLog(game, `${getCard(catalog, activeDoomsayers[0].cardId).name} 触发，消灭了所有随从。`);
+  cleanupDeaths(game, catalog);
+}
+
 function resolveEndTurnRules(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
   const player = game.players[seat];
   for (const minion of player.board) {
     const card = getCard(catalog, minion.cardId);
     if (!minion.silenced && hasRule(card, "dragon_zilliax_haywire")) {
       dealDamage(game, { type: "hero", seat }, 3, seat, catalog, false);
-    }
-    if (!minion.silenced && hasRule(card, "ragnaros")) {
-      const enemies = [
-        { type: "hero" as const, seat: other(seat) },
-        ...game.players[other(seat)].board.map((enemy) => ({ type: "minion" as const, seat: other(seat), instanceId: enemy.instanceId }))
-      ];
-      const random = rng(game.seed + game.turn * 131 + minion.instanceId.length);
-      const target = enemies[Math.floor(random() * enemies.length)];
-      dealDamage(game, target, 8, seat, catalog, false);
-      addLog(game, `${card.name} 在回合结束时喷发。`);
     }
   }
 }
@@ -2615,6 +2642,11 @@ function dealDamage(game: GameState, target: TargetRef, amount: number, sourceOw
   let dealt = amount;
   if (resolved.kind === "hero") {
     const hero = game.players[target.seat].hero;
+    if ((hero.immuneUntilTurn ?? -1) >= game.turn) {
+      addLog(game, `${targetName(game, target, catalog)} 处于免疫状态，未受到伤害。`);
+      return;
+    }
+    if (amount > hero.armor && amount - hero.armor >= hero.health && triggerIceBlock(game, target.seat, catalog)) return;
     const armorBlock = Math.min(hero.armor, amount);
     hero.armor -= armorBlock;
     dealt = amount - armorBlock;
@@ -2634,6 +2666,9 @@ function dealDamage(game: GameState, target: TargetRef, amount: number, sourceOw
     } else {
       resolved.minion.health -= amount;
       addLog(game, `${game.players[sourceOwner].nickname} 对 ${targetName(game, target, catalog)} 造成 ${amount} 点伤害。`);
+      if (!resolved.minion.silenced && hasRule(getCard(catalog, resolved.minion.cardId), "mage_acolyte_of_pain")) {
+        drawCards(game, resolved.minion.owner, 1, catalog, true);
+      }
     }
   }
   if (lifesteal && dealt > 0) heal(game, { type: "hero", seat: sourceOwner }, dealt, catalog);
@@ -2791,7 +2826,7 @@ function createBoardMinion(instance: CardInstance, card: CardDefinition, turn: n
     attacksThisTurn: 0,
     silenced: false,
     temporaryAttack: 0,
-    cannotAttack: hasRule(card, "ragnaros") || isPureNest || isTitan,
+    cannotAttack: isPureNest || isTitan,
     untouchable: isPureNest
   };
 }

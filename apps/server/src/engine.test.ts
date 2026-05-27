@@ -929,4 +929,77 @@ describe("game engine", () => {
     expect(game.players[0].board).toHaveLength(0);
     expect(game.players[1].board).toHaveLength(0);
   });
+  it("tracks board stat effects separately and removes them with silence", () => {
+    const game = createGame("SILENCE_STATS", [
+      { nickname: "A", class: "gearwright", deck: deck("A", "gearwright", Array(30).fill("neutral_squire")) },
+      { nickname: "B", class: "druid", deck: deck("B", "druid", Array(30).fill("neutral_squire")) }
+    ], sampleCards, 171);
+    game.phase = "playing";
+    game.currentPlayer = 0;
+    game.turn = 6;
+    game.players[0].mana = 6;
+    game.players[0].board = [{
+      instanceId: "target",
+      cardId: "neutral_squire",
+      owner: 0,
+      origin: "generated",
+      attack: 1,
+      health: 2,
+      maxHealth: 2,
+      keywords: [],
+      exhausted: false,
+      summonedTurn: 0,
+      attacksThisTurn: 0,
+      silenced: false,
+      temporaryAttack: 0,
+      statEffects: { attack: 0, health: 0 }
+    }];
+    game.players[0].hand = [
+      { instanceId: "buff", cardId: "gearwright_overclock", owner: 0, origin: "starting_deck" },
+      { instanceId: "starfish", cardId: "dragon_starfish", owner: 0, origin: "starting_deck" }
+    ];
+
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "buff", target: { type: "minion", seat: 0, instanceId: "target" } }, sampleCards);
+    const target = game.players[0].board.find((minion) => minion.instanceId === "target")!;
+    expect(target).toMatchObject({ attack: 3, health: 4, maxHealth: 4, statEffects: { attack: 2, health: 2 } });
+
+    game.players[0].mana = 3;
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "starfish" }, sampleCards);
+    expect(target).toMatchObject({ attack: 1, health: 2, maxHealth: 2, silenced: true, statEffects: { attack: 0, health: 0 } });
+  });
+
+  it("copies board stat effects when Broken Mirror summons the table copy", () => {
+    const game = createGame("BROKEN_MIRROR_STATS", [
+      { nickname: "A", class: "druid", deck: deck("A", "druid", Array(30).fill("neutral_squire")) },
+      { nickname: "B", class: "druid", deck: deck("B", "druid", Array(30).fill("neutral_squire")) }
+    ], sampleCards, 172);
+    game.phase = "playing";
+    game.currentPlayer = 0;
+    game.turn = 6;
+    game.players[0].mana = 5;
+    game.players[0].hand = [{ instanceId: "mirror", cardId: "dragon_broken_mirror", owner: 0, origin: "starting_deck" }];
+    game.players[1].board = [{
+      instanceId: "buffed",
+      cardId: "neutral_squire",
+      owner: 1,
+      origin: "generated",
+      attack: 3,
+      health: 4,
+      maxHealth: 4,
+      keywords: ["taunt"],
+      exhausted: false,
+      summonedTurn: 0,
+      attacksThisTurn: 0,
+      silenced: false,
+      temporaryAttack: 0,
+      statEffects: { attack: 2, health: 2 }
+    }];
+
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "mirror", target: { type: "minion", seat: 1, instanceId: "buffed" } }, sampleCards);
+
+    const boardCopy = game.players[0].board.find((minion) => minion.cardId === "neutral_squire")!;
+    expect(boardCopy).toMatchObject({ attack: 3, health: 4, maxHealth: 4, keywords: ["taunt"], statEffects: { attack: 2, health: 2 } });
+    expect(game.players[0].hand.some((card) => card.cardId === "neutral_squire")).toBe(true);
+    expect(game.players[0].deck.some((card) => card.cardId === "neutral_squire")).toBe(true);
+  });
 });

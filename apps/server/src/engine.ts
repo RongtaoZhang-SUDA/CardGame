@@ -293,9 +293,7 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
     const minion = createBoardMinion(applyCrystalCoreToInstance(game, seat, instance, catalog), card, game.turn);
     player.board.push(minion);
     if (hasRule(card, "dragon_death_beetle") && player.maxMana >= 11) {
-      minion.attack += 4;
-      minion.maxHealth += 4;
-      minion.health += 4;
+      applyStatEffect(minion, 4, 4);
       addKeyword(minion, "charge");
       minion.exhausted = false;
     }
@@ -960,7 +958,7 @@ function brokenMirror(game: GameState, seat: Seat, target: TargetRef | undefined
   const cardId = minion.cardId;
   addCardToHand(game, seat, createInstance(cardId, seat), catalog, `获得了 ${getCard(catalog, cardId).name} 的复制。`);
   game.players[seat].deck.push(createInstance(cardId, seat));
-  summon(game, seat, cardId, 1, catalog);
+  summonBoardCopy(game, seat, minion, catalog);
 }
 
 function freezeEnemyMinions(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
@@ -1036,6 +1034,7 @@ function polymorph(game: GameState, target: TargetRef | undefined, catalog: Map<
   minion.keywords = [];
   minion.silenced = false;
   minion.temporaryAttack = 0;
+  minion.statEffects = { attack: 0, health: 0 };
   minion.cannotAttack = false;
   minion.untouchable = false;
   delete minion.attackOverride;
@@ -1086,10 +1085,9 @@ function timewindOtherMinions(game: GameState, sourceInstanceId: string | undefi
   for (const player of game.players) {
     for (const minion of player.board) {
       if (minion.instanceId === sourceInstanceId) continue;
-      if (stat === "attack") minion.attack = 1;
+      if (stat === "attack") setAttackByEffect(minion, 1);
       else {
-        minion.maxHealth = 1;
-        minion.health = Math.min(minion.health, 1);
+        setMaxHealthByEffect(minion, 1);
       }
     }
   }
@@ -1182,7 +1180,7 @@ function twilightGuardian(game: GameState, seat: Seat, cardId: string, catalog: 
   if (!hasDragonInHand(game.players[seat], catalog)) return;
   const minion = sourceMinion(game, seat, cardId);
   if (!minion) return;
-  minion.attack += 1;
+  applyStatEffect(minion, 1, 0);
   addKeyword(minion, "taunt");
   addLog(game, `${sourceName} 获得 +1 攻击力和嘲讽。`);
 }
@@ -1191,8 +1189,7 @@ function twilightDrake(game: GameState, seat: Seat, cardId: string, catalog: Map
   const minion = sourceMinion(game, seat, cardId);
   if (!minion) return;
   const bonus = game.players[seat].hand.length;
-  minion.maxHealth += bonus;
-  minion.health += bonus;
+  applyStatEffect(minion, 0, bonus);
   addLog(game, `${sourceName} 获得 +${bonus} 生命值。`);
 }
 
@@ -1415,17 +1412,15 @@ function stealSerenaStats(game: GameState, seat: Seat, target: TargetRef | undef
   if (!victim || !serena) throw new Error(`${sourceName} 没有可偷取的属性。`);
   let stolenAttack = 0;
   while (victim.attack > 0 && serena.attack <= victim.attack) {
-    victim.attack -= 1;
-    serena.attack += 1;
+    applyStatEffect(victim, -1, 0);
+    applyStatEffect(serena, 1, 0);
     stolenAttack += 1;
   }
 
   let stolenHealth = 0;
   while (victim.health > 0 && serena.health <= victim.health) {
-    victim.health -= 1;
-    victim.maxHealth = Math.max(0, victim.maxHealth - 1);
-    serena.health += 1;
-    serena.maxHealth += 1;
+    applyStatEffect(victim, 0, -1);
+    applyStatEffect(serena, 0, 1);
     stolenHealth += 1;
   }
   addLog(game, `${sourceName} 从 ${targetName(game, target, catalog)} 偷取了 ${stolenAttack}/${stolenHealth}。`);
@@ -1669,6 +1664,7 @@ function setBoardMinionToCrystalCore(minion: BoardMinion): void {
   minion.maxHealth = 5;
   minion.attackOverride = 5;
   minion.healthOverride = 5;
+  minion.statEffects = { attack: 0, health: 0 };
 }
 
 function twilightTorrent(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
@@ -1821,7 +1817,9 @@ function twinPerfectZilliax(game: GameState, seat: Seat, instanceId: string, cat
     owner: seat,
     summonedTurn: game.turn,
     attacksThisTurn: 0,
-    exhausted: !source.keywords.includes("charge")
+    exhausted: !source.keywords.includes("charge"),
+    keywords: [...source.keywords],
+    statEffects: source.statEffects ? { ...source.statEffects } : { attack: 0, health: 0 }
   };
   game.players[seat].board.push(copy);
   addLog(game, `${sourceName} 召唤了一个复制。`);
@@ -2824,6 +2822,28 @@ function summon(game: GameState, seat: Seat, cardId: string, amount: number, cat
   }
 }
 
+function summonBoardCopy(game: GameState, seat: Seat, source: BoardMinion, catalog: Map<string, CardDefinition>): void {
+  const player = game.players[seat];
+  if (occupiedBoardSlots(player) >= GAME_RULES.maxBoardSize) return;
+  const card = getCard(catalog, source.cardId);
+  const copy: BoardMinion = {
+    ...source,
+    instanceId: randomUUID(),
+    owner: seat,
+    origin: "generated",
+    summonedTurn: game.turn,
+    attacksThisTurn: 0,
+    exhausted: true,
+    keywords: [...source.keywords],
+    statEffects: source.statEffects ? { ...source.statEffects } : { attack: 0, health: 0 },
+    usedTitanAbilityCardIds: source.usedTitanAbilityCardIds ? [...source.usedTitanAbilityCardIds] : undefined,
+    borrowedByInstanceId: undefined,
+    borrowedFromSeat: undefined
+  };
+  player.board.push(copy);
+  addLog(game, `${player.nickname} 召唤了 ${card.name} 的复制。`);
+}
+
 function dealDamage(game: GameState, target: TargetRef, amount: number, sourceOwner: Seat, catalog: Map<string, CardDefinition>, lifesteal: boolean): void {
   if (amount <= 0) return;
   if (isUntouchableTarget(game, target)) return;
@@ -2885,9 +2905,7 @@ function buff(game: GameState, target: TargetRef, attack: number, health: number
   if (isUntouchableTarget(game, target)) return;
   const resolved = getTarget(game, target);
   if (resolved.kind !== "minion") throw new Error("只能强化随从。");
-  resolved.minion.attack += attack;
-  resolved.minion.maxHealth += health;
-  resolved.minion.health += health;
+  applyStatEffect(resolved.minion, attack, health);
   addLog(game, `${targetName(game, target, catalog)} 获得 +${attack}/+${health}。`);
 }
 
@@ -2907,11 +2925,13 @@ function silence(game: GameState, target: TargetRef, catalog: Map<string, CardDe
   const resolved = getTarget(game, target);
   if (resolved.kind !== "minion") throw new Error("只能沉默随从。");
   const card = getCard(catalog, resolved.minion.cardId);
-  resolved.minion.attack = resolved.minion.attackOverride ?? card.attack ?? resolved.minion.attack;
-  resolved.minion.maxHealth = resolved.minion.healthOverride ?? card.health ?? resolved.minion.maxHealth;
+  resolved.minion.attack = baseAttack(resolved.minion, card);
+  resolved.minion.maxHealth = baseHealth(resolved.minion, card);
   resolved.minion.health = Math.min(resolved.minion.health, resolved.minion.maxHealth);
+  resolved.minion.statEffects = { attack: 0, health: 0 };
   resolved.minion.keywords = [];
   resolved.minion.silenced = true;
+  resolved.minion.temporaryAttack = 0;
   resolved.minion.cannotAttack = false;
   addLog(game, `${card.name} 被沉默。`);
 }
@@ -3000,6 +3020,36 @@ function checkGameOver(game: GameState): void {
   addLog(game, game.winner === undefined ? "对局以平局结束。" : `${game.players[game.winner].nickname} 获胜。`);
 }
 
+function baseAttack(minion: BoardMinion, card: CardDefinition): number {
+  return minion.attackOverride ?? card.attack ?? 0;
+}
+
+function baseHealth(minion: BoardMinion, card: CardDefinition): number {
+  return minion.healthOverride ?? card.health ?? 1;
+}
+
+function ensureStatEffects(minion: BoardMinion): { attack: number; health: number } {
+  minion.statEffects ??= { attack: 0, health: 0 };
+  return minion.statEffects;
+}
+
+function applyStatEffect(minion: BoardMinion, attack: number, health: number): void {
+  const effects = ensureStatEffects(minion);
+  effects.attack += attack;
+  effects.health += health;
+  minion.attack += attack;
+  minion.maxHealth = Math.max(0, minion.maxHealth + health);
+  minion.health = Math.min(Math.max(0, minion.health + health), minion.maxHealth);
+}
+
+function setAttackByEffect(minion: BoardMinion, attack: number): void {
+  applyStatEffect(minion, attack - minion.attack, 0);
+}
+
+function setMaxHealthByEffect(minion: BoardMinion, health: number): void {
+  applyStatEffect(minion, 0, health - minion.maxHealth);
+}
+
 function createBoardMinion(instance: CardInstance, card: CardDefinition, turn: number): BoardMinion {
   const attack = instance.attackOverride ?? card.attack ?? 0;
   const health = instance.healthOverride ?? card.health ?? 1;
@@ -3016,6 +3066,7 @@ function createBoardMinion(instance: CardInstance, card: CardDefinition, turn: n
     attacksThisTurn: 0,
     silenced: false,
     temporaryAttack: 0,
+    statEffects: { attack: 0, health: 0 },
     cannotAttack: isPureNest || isTitan,
     untouchable: isPureNest
   };

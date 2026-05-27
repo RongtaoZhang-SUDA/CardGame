@@ -331,6 +331,10 @@ export interface BoardMinion extends CardInstance {
   attack: number;
   health: number;
   maxHealth: number;
+  statEffects?: {
+    attack: number;
+    health: number;
+  };
   keywords: Keyword[];
   exhausted: boolean;
   summonedTurn: number;

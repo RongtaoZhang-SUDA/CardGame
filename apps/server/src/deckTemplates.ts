@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { CLASS_LABELS, GAME_RULES, HERO_CLASS_PROFILES, legalCardsForClass, type CardDefinition, type CollectibleClass, type DeckTemplate } from "@dormstone/shared";
 import { dragonHighlanderDruidTemplate } from "./dragonHighlanderDruid.js";
+import { companionHunterTemplate } from "./companionHunter.js";
 import { freezeMageTemplate } from "./freezeMage.js";
 import { questRogueTemplate } from "./questRogue.js";
 import { renathalPriestTemplate } from "./renathalPriest.js";
@@ -106,7 +107,7 @@ function addDeckCopies(cardIds: string[], chosenCounts: Map<string, number>, car
 }
 
 function loadDeckTemplates(): DeckTemplate[] {
-  return [renathalPriestTemplate, dragonHighlanderDruidTemplate, freezeMageTemplate, questRogueTemplate];
+  return [renathalPriestTemplate, dragonHighlanderDruidTemplate, companionHunterTemplate, freezeMageTemplate, questRogueTemplate];
 }
 
 function rowToTemplate(row: CsvDeckRow): DeckTemplate {

@@ -1,6 +1,7 @@
 import type { CardDefinition } from "@dormstone/shared";
 import { csvCoreCards } from "./csvCoreCards.js";
 import { dragonHighlanderDruidCards } from "./dragonHighlanderDruid.js";
+import { companionHunterCards } from "./companionHunter.js";
 import { freezeMageCards } from "./freezeMage.js";
 import { questRogueCards } from "./questRogue.js";
 import { renathalPriestCards } from "./renathalPriest.js";
@@ -25,6 +26,7 @@ function card(input: CardInput): CardDefinition {
 export const sampleCards: CardDefinition[] = [
   ...csvCoreCards,
   ...dragonHighlanderDruidCards,
+  ...companionHunterCards,
   ...freezeMageCards,
   ...questRogueCards,
   ...renathalPriestCards,

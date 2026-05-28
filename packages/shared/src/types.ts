@@ -161,6 +161,31 @@ export type CardRuleTag =
   | "dragon_eonar_draw"
   | "dragon_eonar_heal"
   | "dragon_eonar_refresh"
+  | "hunter_tracking"
+  | "hunter_animal_companion"
+  | "hunter_companion_misha"
+  | "hunter_companion_leokk"
+  | "hunter_companion_huffer"
+  | "hunter_broll_bearmantle"
+  | "hunter_raptor_nest_caretaker"
+  | "hunter_ranger_aurelia"
+  | "hunter_ranger_vereesa"
+  | "hunter_ranger_sylvanas"
+  | "hunter_taya_runetotem"
+  | "hunter_little_critter_caretaker"
+  | "hunter_wound_prey"
+  | "hunter_blazing_cinder"
+  | "hunter_sands_of_time"
+  | "hunter_face_the_tolvir"
+  | "hunter_tame_beast"
+  | "hunter_spirit_bond_hunter"
+  | "hunter_migrating_elekk"
+  | "hunter_free_roam"
+  | "hunter_call_of_the_wild"
+  | "hunter_glacial_shard"
+  | "hunter_mad_alchemist"
+  | "hunter_niri_of_ungoro"
+  | "hunter_deafening_roar"
   | "mage_ice_lance"
   | "mage_arcane_missiles"
   | "mage_frostbolt"
@@ -443,6 +468,14 @@ export interface PlayerGameState {
   avianaActive?: boolean;
   spellsCastThisGame?: number;
   forgedThisGame?: boolean;
+  animalCompanionReplacementCost?: number;
+  animalCompanionExtraSummons?: number;
+  hunterRangersPlayed?: {
+    aurelia?: boolean;
+    vereesa?: boolean;
+    sylvanas?: boolean;
+  };
+  hunterOneCostCardsPlayed?: string[];
   kiljaedenPortal?: {
     bonus: number;
     demonCardIds: string[];

@@ -301,6 +301,10 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
       addKeyword(minion, "charge");
       minion.exhausted = false;
     }
+    if (hunterNiriActive(game, seat, catalog) && card.cost === 1) {
+      applyStatEffect(minion, minion.attack, minion.maxHealth);
+      addLog(game, `${card.name} 被环形山的尼利翻倍了属性。`);
+    }
     addLog(game, `${player.nickname} 召唤了 ${card.name}。`);
     trackQuestMinionPlayed(game, seat, card, catalog);
     maybeSummonPatches(game, seat, card, catalog);
@@ -315,7 +319,13 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
     addLog(game, `${player.nickname} 使用了 ${card.name}。`);
     applyEffects(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "play" }, catalog);
     applyRulePlay(game, seat, instance, card, target, catalog);
+    if (hunterNiriActive(game, seat, catalog) && card.cost === 1 && !game.pendingChoice) {
+      addLog(game, `环形山的尼利让 ${card.name} 再次施放。`);
+      applyEffects(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "play" }, catalog);
+      applyRulePlay(game, seat, instance, card, target, catalog, true);
+    }
     beginCardChoice(game, seat, card, catalog);
+    if (!game.pendingChoice) triggerBrollAfterSpell(game, seat, catalog, card.name);
     const remainingUses = instance.remainingUses ?? card.repeatableUses ?? 1;
     if (remainingUses > 1) player.hand.push({ ...instance, remainingUses: remainingUses - 1 });
     else player.graveyard.push(card.id);
@@ -347,6 +357,7 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
     applyEffects(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "quickdraw" }, catalog);
   }
   drawMoonlitOriginal(game, seat, instance, catalog);
+  recordHunterOneCostCardPlayed(player, card);
   cleanupDeaths(game, catalog);
   recordCardPlayed(player);
 }
@@ -495,6 +506,14 @@ function applyRuleBattlecry(game: GameState, seat: Seat, instance: CardInstance,
   }
   if (hasRule(card, "dragon_doomkin")) stealEmptyMana(game, seat, card.name);
   if (hasRule(card, "dragon_rheastrasza")) summonPureNest(game, seat, catalog, card.name);
+  if (hasRule(card, "hunter_mad_alchemist")) madAlchemist(game, target, catalog, card.name);
+  if (hasRule(card, "hunter_raptor_nest_caretaker")) raptorNestCaretakerBattlecry(game, seat, catalog, card.name);
+  if (hasRule(card, "hunter_ranger_aurelia")) rangerAurelia(game, seat, catalog, card.name);
+  if (hasRule(card, "hunter_ranger_vereesa")) rangerVereesa(game, seat, catalog, card.name);
+  if (hasRule(card, "hunter_ranger_sylvanas")) rangerSylvanas(game, seat, catalog, card.name);
+  if (hasRule(card, "hunter_taya_runetotem")) tayaRunetotem(game, seat, card.name);
+  if (hasRule(card, "hunter_migrating_elekk")) upgradeAnimalCompanions(game, seat, 1, card.name);
+  if (hasRule(card, "hunter_glacial_shard")) freezeTarget(game, target, catalog, card.name);
   if (hasRule(card, "rogue_fire_fly")) addCardToHand(game, seat, createInstance("quest_rogue_flame_elemental", seat), catalog, `获得了 ${getCard(catalog, "quest_rogue_flame_elemental").name}。`);
   if (hasRule(card, "rogue_swashburglar_huckster")) addRandomOpponentClassCard(game, seat, catalog, card.name);
   if (hasRule(card, "rogue_youthful_brewmaster")) returnFriendlyMinionToHand(game, seat, target, catalog, card.name, 0);
@@ -505,7 +524,7 @@ function applyRuleBattlecry(game: GameState, seat: Seat, instance: CardInstance,
   if (hasRule(card, "mage_alexstrasza")) alexstraszaClassic(game, target, catalog, card.name);
 }
 
-function applyRulePlay(game: GameState, seat: Seat, instance: CardInstance, card: CardDefinition, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
+function applyRulePlay(game: GameState, seat: Seat, instance: CardInstance, card: CardDefinition, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, _replayed = false): void {
   const player = game.players[seat];
   if (hasRule(card, "priest_raise_dead")) raiseDead(game, seat, catalog);
   if (hasRule(card, "priest_mend")) mend(game, seat, target, catalog, card.name);
@@ -543,6 +562,15 @@ function applyRulePlay(game: GameState, seat: Seat, instance: CardInstance, card
   if (hasRule(card, "dragon_overgrowth")) gainEmptyMana(game, seat, 2, card.name);
   if (hasRule(card, "dragon_broken_mirror")) brokenMirror(game, seat, target, catalog, card.name);
   if (hasRule(card, "dragon_guff")) becomeGuff(game, seat, catalog, card.name);
+  if (hasRule(card, "hunter_tracking")) hunterTracking(game, seat);
+  if (hasRule(card, "hunter_animal_companion")) summonAnimalCompanionCard(game, seat, catalog, card.name);
+  if (hasRule(card, "hunter_wound_prey")) woundPrey(game, seat, target, catalog, card.name);
+  if (hasRule(card, "hunter_sands_of_time")) discoverSpell(game, seat, catalog, card.name);
+  if (hasRule(card, "hunter_face_the_tolvir")) faceTheTolvir(game, seat, catalog, card.name);
+  if (hasRule(card, "hunter_tame_beast")) upgradeAnimalCompanions(game, seat, 1, card.name);
+  if (hasRule(card, "hunter_free_roam")) upgradeAnimalCompanions(game, seat, 2, card.name);
+  if (hasRule(card, "hunter_call_of_the_wild")) callOfTheWild(game, seat, catalog, card.name);
+  if (hasRule(card, "hunter_deafening_roar")) deafeningRoar(game, seat, target, catalog, card.name);
   if (hasRule(card, "mage_ice_lance")) iceLance(game, seat, target, catalog, card);
   if (hasRule(card, "mage_arcane_missiles")) arcaneMissiles(game, seat, card, catalog);
   if (hasRule(card, "mage_frostbolt")) freezeTarget(game, target, catalog, card.name);
@@ -843,6 +871,238 @@ function hasDragonInHand(player: PlayerGameState, catalog: Map<string, CardDefin
 
 function hasRace(card: CardDefinition, race: string): boolean {
   return Boolean(card.races?.includes(race));
+}
+
+function recordHunterOneCostCardPlayed(player: PlayerGameState, card: CardDefinition): void {
+  if (card.cost !== 1 || (card.class !== "hunter" && card.class !== "neutral")) return;
+  player.hunterOneCostCardsPlayed = [...(player.hunterOneCostCardsPlayed ?? []), card.id];
+}
+
+function hunterNiriActive(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): boolean {
+  return game.players[seat].board.some((minion) =>
+    !minion.silenced && hasRule(getCard(catalog, minion.cardId), "hunter_niri_of_ungoro")
+  );
+}
+
+function triggerBrollAfterSpell(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, spellName: string): void {
+  const brolls = game.players[seat].board.filter((minion) =>
+    !minion.silenced && hasRule(getCard(catalog, minion.cardId), "hunter_broll_bearmantle")
+  );
+  for (const _broll of brolls) summonAnimalCompanionCard(game, seat, catalog, `${getCard(catalog, "companion_hunter_broll").name}响应${spellName}`);
+}
+
+function hunterTracking(game: GameState, seat: Seat): void {
+  chooseFromDeck(game, seat, "dragon_wave_shaper", discoverDeckOptions(game, seat, 3), "用追踪术从牌库中发现一张牌。");
+}
+
+function animalCompanionTokenIds(): string[] {
+  return ["companion_token_misha", "companion_token_leokk", "companion_token_huffer"];
+}
+
+function summonAnimalCompanionCard(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string, fixedCardId?: string): void {
+  summonAnimalCompanionOnce(game, seat, catalog, sourceName, fixedCardId);
+  const extras = game.players[seat].animalCompanionExtraSummons ?? 0;
+  for (let index = 0; index < extras; index += 1) summonAnimalCompanionOnce(game, seat, catalog, `${sourceName}的额外伙伴`);
+}
+
+function summonAnimalCompanionOnce(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string, fixedCardId?: string): void {
+  const player = game.players[seat];
+  const replacementCost = player.animalCompanionReplacementCost;
+  const cardId = replacementCost
+    ? randomBeastForCompanion(game, seat, catalog, replacementCost, sourceName)
+    : fixedCardId ?? randomFrom(game, seat, animalCompanionTokenIds(), sourceName);
+  const summoned = summonMinionForRule(game, seat, cardId, catalog);
+  if (!summoned) return;
+  if (cardId === "companion_token_leokk") applyLeokkBuff(game, seat, summoned.instanceId);
+  addLog(game, `${sourceName} 召唤了 ${getCard(catalog, cardId).name}。`);
+}
+
+function randomFrom(game: GameState, seat: Seat, values: string[], salt: string): string {
+  const random = rng(game.seed + game.turn * 983 + seat * 181 + values.length * 17 + salt.length + game.logs.length);
+  return values[Math.floor(random() * values.length)];
+}
+
+function randomBeastForCompanion(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, cost: number, sourceName: string): string {
+  const playerClass = game.players[seat].class;
+  const beasts = [...catalog.values()].filter((card) =>
+    card.collectible &&
+    card.type === "minion" &&
+    hasRace(card, "BEAST") &&
+    (card.class === playerClass || card.class === "neutral")
+  );
+  const exact = beasts.filter((card) => card.cost === cost);
+  const pool = exact.length > 0 ? exact : beasts.filter((card) => Math.abs(card.cost - cost) <= 1);
+  const fallback = pool.length > 0 ? pool : beasts;
+  if (fallback.length === 0) return randomFrom(game, seat, animalCompanionTokenIds(), sourceName);
+  const random = rng(game.seed + game.turn * 991 + seat * 191 + cost * 31 + fallback.length + game.logs.length);
+  return fallback[Math.floor(random() * fallback.length)].id;
+}
+
+function summonMinionForRule(game: GameState, seat: Seat, cardId: string, catalog: Map<string, CardDefinition>): BoardMinion | undefined {
+  const player = game.players[seat];
+  if (occupiedBoardSlots(player) >= GAME_RULES.maxBoardSize) return undefined;
+  const card = getCard(catalog, cardId);
+  if (card.type !== "minion") throw new Error("只能召唤随从。");
+  const minion = createBoardMinion(applyCrystalCoreToInstance(game, seat, createInstance(cardId, seat), catalog), card, game.turn);
+  player.board.push(minion);
+  return minion;
+}
+
+function applyLeokkBuff(game: GameState, seat: Seat, sourceInstanceId: string): void {
+  for (const minion of game.players[seat].board) {
+    if (minion.instanceId !== sourceInstanceId) applyStatEffect(minion, 1, 0);
+  }
+}
+
+function callOfTheWild(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  for (const cardId of animalCompanionTokenIds()) summonAnimalCompanionOnce(game, seat, catalog, sourceName, cardId);
+  const extras = game.players[seat].animalCompanionExtraSummons ?? 0;
+  for (let index = 0; index < extras; index += 1) summonAnimalCompanionOnce(game, seat, catalog, `${sourceName}的额外伙伴`);
+}
+
+function upgradeAnimalCompanions(game: GameState, seat: Seat, amount: number, sourceName: string): void {
+  const player = game.players[seat];
+  player.animalCompanionReplacementCost = Math.min(10, (player.animalCompanionReplacementCost ?? 3) + amount);
+  addLog(game, `${sourceName} 将此后的动物伙伴替换为 ${player.animalCompanionReplacementCost} 费随机野兽。`);
+}
+
+function woundPrey(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target) throw new Error(`${sourceName} 需要选择一个目标。`);
+  dealDamage(game, target, 1, seat, catalog, false);
+  summon(game, seat, "companion_token_hyena", 1, catalog);
+}
+
+function faceTheTolvir(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const played = [...new Set(game.players[seat].hunterOneCostCardsPlayed ?? [])];
+  for (const cardId of played) replayHunterOneCostCard(game, seat, cardId, catalog, sourceName);
+  addLog(game, `${sourceName} 重新使用了 ${played.length} 种1费牌。`);
+}
+
+function replayHunterOneCostCard(game: GameState, seat: Seat, cardId: string, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const card = getCard(catalog, cardId);
+  if (card.type === "minion") {
+    const minion = summonMinionForRule(game, seat, cardId, catalog);
+    if (minion && hasRule(card, "hunter_raptor_nest_caretaker")) raptorNestCaretakerBattlecry(game, seat, catalog, sourceName);
+    return;
+  }
+  const target = defaultEnemyTarget(game, seat, card);
+  if (hasRule(card, "hunter_tracking")) hunterTracking(game, seat);
+  if (hasRule(card, "hunter_wound_prey")) woundPrey(game, seat, target, catalog, sourceName);
+  if (hasRule(card, "hunter_sands_of_time")) discoverSpell(game, seat, catalog, sourceName);
+  if (hasRule(card, "hunter_tame_beast")) {
+    drawCards(game, seat, 1, catalog, true);
+    upgradeAnimalCompanions(game, seat, 1, sourceName);
+  }
+  if (hasRule(card, "hunter_deafening_roar")) deafeningRoar(game, seat, target, catalog, sourceName);
+}
+
+function defaultEnemyTarget(game: GameState, seat: Seat, card: CardDefinition): TargetRef | undefined {
+  if (!card.requiresTarget) return undefined;
+  const enemySeat = other(seat);
+  if (hasRule(card, "hunter_deafening_roar")) {
+    const minion = game.players[enemySeat].board[0];
+    return minion ? { type: "minion", seat: enemySeat, instanceId: minion.instanceId } : undefined;
+  }
+  return { type: "hero", seat: enemySeat };
+}
+
+function randomOneCostCardToHand(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, type: "minion" | "spell", sourceName: string): void {
+  const playerClass = game.players[seat].class;
+  const pool = [...catalog.values()].filter((card) =>
+    card.collectible &&
+    card.cost === 1 &&
+    card.type === type &&
+    (card.class === playerClass || card.class === "neutral")
+  );
+  if (pool.length === 0) return;
+  const random = rng(game.seed + game.turn * 997 + seat * 197 + pool.length + sourceName.length);
+  const picked = pool[Math.floor(random() * pool.length)];
+  addCardToHand(game, seat, createInstance(picked.id, seat), catalog, `${sourceName} 获取了 ${picked.name}。`);
+}
+
+function raptorNestCaretakerBattlecry(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  randomOneCostCardToHand(game, seat, catalog, "minion", sourceName);
+}
+
+function raptorNestCaretakerDeathrattle(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  randomOneCostCardToHand(game, seat, catalog, "spell", sourceName);
+}
+
+function rangerMarks(player: PlayerGameState): NonNullable<PlayerGameState["hunterRangersPlayed"]> {
+  player.hunterRangersPlayed ??= {};
+  return player.hunterRangersPlayed;
+}
+
+function rangerRepeatCount(player: PlayerGameState, names: Array<keyof NonNullable<PlayerGameState["hunterRangersPlayed"]>>): number {
+  const marks = rangerMarks(player);
+  return 1 + names.filter((name) => marks[name]).length;
+}
+
+function rangerAurelia(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  const copies = rangerRepeatCount(player, ["sylvanas", "vereesa"]);
+  const spells = player.deck.filter((instance) => getCard(catalog, instance.cardId).type === "spell");
+  discoverCardCopies(game, seat, spells, catalog, `${sourceName} 发现一张法术牌。`, 3, copies);
+  rangerMarks(player).aurelia = true;
+}
+
+function rangerVereesa(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  const repeats = rangerRepeatCount(player, ["aurelia", "sylvanas"]);
+  for (let count = 0; count < repeats; count += 1) {
+    for (const instance of player.deck) {
+      const card = getCard(catalog, instance.cardId);
+      if (card.type !== "minion") continue;
+      instance.attackOverride = (instance.attackOverride ?? card.attack ?? 0) + 1;
+      instance.healthOverride = (instance.healthOverride ?? card.health ?? 1) + 1;
+    }
+  }
+  rangerMarks(player).vereesa = true;
+  addLog(game, `${sourceName} 使牌库中的随从牌获得 ${repeats} 次 +1/+1。`);
+}
+
+function rangerSylvanas(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  const repeats = rangerRepeatCount(player, ["aurelia", "vereesa"]);
+  for (let count = 0; count < repeats; count += 1) damageAllEnemies(game, seat, 2, catalog);
+  rangerMarks(player).sylvanas = true;
+  addLog(game, `${sourceName} 对所有敌人造成了 ${repeats} 次伤害。`);
+}
+
+function damageAllEnemies(game: GameState, seat: Seat, amount: number, catalog: Map<string, CardDefinition>): void {
+  const enemySeat = other(seat);
+  const targets = [
+    { type: "hero" as const, seat: enemySeat },
+    ...game.players[enemySeat].board.map((minion) => ({ type: "minion" as const, seat: enemySeat, instanceId: minion.instanceId }))
+  ];
+  for (const target of targets) dealDamage(game, target, amount, seat, catalog, false);
+  cleanupDeaths(game, catalog);
+}
+
+function tayaRunetotem(game: GameState, seat: Seat, sourceName: string): void {
+  const player = game.players[seat];
+  player.animalCompanionExtraSummons = (player.animalCompanionExtraSummons ?? 0) + 1;
+  addLog(game, `${sourceName} 让此后召唤动物伙伴的卡牌额外召唤一个伙伴。`);
+}
+
+function madAlchemist(game: GameState, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion") throw new Error(`${sourceName} 需要选择一个随从。`);
+  const minion = findMinion(game, target);
+  if (!minion) throw new Error("目标随从已经离开战场。");
+  const attack = minion.attack;
+  const health = minion.health;
+  setAttackByEffect(minion, health);
+  setMaxHealthByEffect(minion, attack);
+  minion.health = Math.min(minion.health, minion.maxHealth);
+  addLog(game, `${sourceName} 交换了 ${targetName(game, target, catalog)} 的攻击力和生命值。`);
+}
+
+function deafeningRoar(game: GameState, seat: Seat, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  if (!target || target.type !== "minion" || target.seat !== other(seat)) throw new Error(`${sourceName} 需要选择一个敌方随从。`);
+  const minion = findMinion(game, target);
+  if (!minion) return;
+  setMaxHealthByEffect(minion, 1);
+  minion.health = Math.min(minion.health, 1);
 }
 
 function gainEmptyMana(game: GameState, seat: Seat, amount: number, sourceName: string): void {
@@ -1293,6 +1553,9 @@ function applyRuleChoice(game: GameState, seat: Seat, optionCard: CardDefinition
   if (hasRule(optionCard, "dragon_bob_triple")) bobFindTriple(game, seat, catalog, optionCard.name);
   if (hasRule(optionCard, "dragon_timewinder_attack")) timewindOtherMinions(game, sourceInstanceId, catalog, "attack");
   if (hasRule(optionCard, "dragon_timewinder_health")) timewindOtherMinions(game, sourceInstanceId, catalog, "health");
+  if (hasRule(optionCard, "hunter_companion_misha")) summonAnimalCompanionCard(game, seat, catalog, optionCard.name, "companion_token_misha");
+  if (hasRule(optionCard, "hunter_companion_leokk")) summonAnimalCompanionCard(game, seat, catalog, optionCard.name, "companion_token_leokk");
+  if (hasRule(optionCard, "hunter_companion_huffer")) summonAnimalCompanionCard(game, seat, catalog, optionCard.name, "companion_token_huffer");
   if (hasRule(optionCard, "dragon_eonar_draw")) {
     drawUntilFull(game, seat, catalog);
     summon(game, seat, "dragon_token_eonar_tree", 1, catalog);
@@ -2627,6 +2890,10 @@ function resolveEndTurnRules(game: GameState, seat: Seat, catalog: Map<string, C
     if (!minion.silenced && hasRule(card, "dragon_zilliax_haywire")) {
       dealDamage(game, { type: "hero", seat }, 3, seat, catalog, false);
     }
+    if (!minion.silenced && hasRule(card, "hunter_little_critter_caretaker")) {
+      heal(game, { type: "hero", seat }, 3, catalog);
+      heal(game, { type: "hero", seat: other(seat) }, 3, catalog);
+    }
   }
 }
 
@@ -2956,6 +3223,9 @@ function cleanupDeaths(game: GameState, catalog: Map<string, CardDefinition>): v
         if (!minion.silenced && hasRule(card, "dragon_seeded_green_drake")) addRandomDragonToHand(game, player.seat, catalog, card.name, -2);
         if (!minion.silenced && hasRule(card, "dragon_bone_drake")) addRandomDragonToHand(game, player.seat, catalog, card.name);
         if (!minion.silenced && hasRule(card, "rogue_igneous_elemental")) addFlameElementals(game, player.seat, 2, catalog, card.name);
+        if (!minion.silenced && hasRule(card, "hunter_raptor_nest_caretaker")) raptorNestCaretakerDeathrattle(game, player.seat, catalog, card.name);
+        if (!minion.silenced && hasRule(card, "hunter_blazing_cinder")) dealRandomEnemyDamage(game, player.seat, 2, catalog, card.name);
+        if (!minion.silenced && card.id === "companion_beast_savannah_highmane") summon(game, player.seat, "companion_token_hyena", 2, catalog);
       }
       changed = true;
     }

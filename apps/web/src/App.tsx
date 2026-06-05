@@ -6,6 +6,7 @@ import { CARD_CLASSES, CLASS_LABELS, cardNeedsTarget, validateCard, type CardDef
 
 type ApiEnvelope<T> = { ok: true; data: T } | { ok: false; error: string };
 type Tab = "lobby" | "decks" | "editor" | "battle";
+type CompanionPoolNotice = { seat: number; cost: string; cardIds: string[]; signature: string };
 
 const emptyCard: CardDefinition = {
   id: "",
@@ -417,7 +418,8 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
   const heroPowerCard = cardMap.get(self.hero.heroPowerCardId ?? `hero_power_${self.class}`);
   const heroPowerCost = heroPowerPlayCost(self, heroPowerCard, cardMap);
   const selfHeroFrozen = (self.hero.frozenUntilTurn ?? -1) >= game.turn;
-  const canHeroAttack = isTurn && heroAttackValue(self) > 0 && self.hero.attacksThisTurn === 0 && !selfHeroFrozen;
+  const heroMaxAttacks = self.hero.weapon?.keywords?.includes("windfury") ? 2 : 1;
+  const canHeroAttack = isTurn && heroAttackValue(self) > 0 && self.hero.attacksThisTurn < heroMaxAttacks && !selfHeroFrozen;
   const pendingChoiceCard = pending?.kind === "choice"
     ? cardMap.get(choiceForSelf?.options.find((option) => option.instanceId === pending.optionInstanceId)?.cardId ?? "")
     : undefined;
@@ -429,6 +431,16 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
     : pending?.kind === "location" ? "请选择地标目标"
     : "";
 
+  const [dismissedCompanionPools, setDismissedCompanionPools] = useState<Set<string>>(new Set());
+  const [activeCompanionPool, setActiveCompanionPool] = useState<CompanionPoolNotice | null>(null);
+  const companionPoolEntries = useMemo<CompanionPoolNotice[]>(() => game.players.flatMap((player) =>
+    Object.entries(player.animalCompanionReplacementPools ?? {}).map(([cost, cardIds]) => ({
+      seat: player.seat,
+      cost,
+      cardIds,
+      signature: `${game.roomCode}:${player.seat}:${cost}:${cardIds.join(",")}`
+    }))
+  ), [game.players, game.roomCode]);
   const seenQuestProgress = useRef<Record<number, number | undefined>>({});
 
   useEffect(() => {
@@ -443,6 +455,12 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
     opponent,
     setNotice
   ]);
+
+  useEffect(() => {
+    if (activeCompanionPool && companionPoolEntries.some((entry) => entry.signature === activeCompanionPool.signature)) return;
+    const nextPool = companionPoolEntries.find((entry) => !dismissedCompanionPools.has(entry.signature));
+    setActiveCompanionPool(nextPool ?? null);
+  }, [activeCompanionPool, companionPoolEntries, dismissedCompanionPools]);
 
   async function send(action: GameAction) {
     await emitAck(socket, "game:action", { action });
@@ -540,7 +558,7 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
             {self.board.map((minion) => {
               const card = cardMap.get(minion.cardId);
               const abilityReady = titanAbilityReady(minion, card, game.turn, isTurn);
-              const attackStatus = minionAttackStatus(minion, card, game.turn, isTurn);
+              const attackStatus = minionAttackStatus(minion, card, self.board, cardMap, game.turn, isTurn);
               return <MinionTile key={minion.instanceId} minion={minion} card={card} attackStatus={attackStatus} turn={game.turn} targetable={Boolean(pending)} onClick={() => {
                 if (pending) chooseTarget({ type: "minion", seat: self.seat, instanceId: minion.instanceId });
                 else if (abilityReady) send({ type: "use_titan_ability", minionInstanceId: minion.instanceId }).catch(showError(setNotice));
@@ -623,6 +641,32 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
           </details>
         </aside>
       </section>
+
+      {activeCompanionPool && (
+        <div className="choice-overlay">
+          <div className="choice-modal companion-pool-modal">
+            <p className="eyebrow">Animal Companion Pool</p>
+            <h2>{activeCompanionPool.seat === self.seat ? "我方" : "对手"} {activeCompanionPool.cost} 费固定野兽池</h2>
+            <div className="choice-list companion-pool-list">
+              {activeCompanionPool.cardIds.map((cardId) => {
+                const poolCard = cardMap.get(cardId);
+                if (!poolCard) return null;
+                return <CardTile key={cardId} card={poolCard} className="choice-card companion-pool-card" />;
+              })}
+            </div>
+            <button className="ghost companion-pool-close" onClick={() => {
+              setDismissedCompanionPools((previous) => {
+                const next = new Set(previous);
+                next.add(activeCompanionPool.signature);
+                return next;
+              });
+              setActiveCompanionPool(null);
+            }}>
+              关闭展示
+            </button>
+          </div>
+        </div>
+      )}
 
       {game.pendingChoice && pending?.kind !== "choice" && (
         <div className="choice-overlay">
@@ -931,7 +975,14 @@ function titanAbilityReady(minion: PublicGameState["players"][number]["board"][n
   return Boolean(isTurn && !minion.silenced && (minion.frozenUntilTurn ?? -1) < turn && minion.titanAbilityUsedTurn !== turn && titanRemainingAbilityIds(minion, card).length > 0);
 }
 
-function minionAttackStatus(minion: PublicGameState["players"][number]["board"][number], card: CardDefinition | undefined, turn: number, isTurn: boolean): { ready: boolean; label: string } {
+function minionAttackStatus(
+  minion: PublicGameState["players"][number]["board"][number],
+  card: CardDefinition | undefined,
+  friendlyBoard: PublicGameState["players"][number]["board"],
+  cardMap: Map<string, CardDefinition>,
+  turn: number,
+  isTurn: boolean
+): { ready: boolean; label: string } {
   if (!isTurn) return { ready: false, label: "等待" };
   if (titanRemainingAbilityIds(minion, card).length > 0) return { ready: false, label: minion.titanAbilityUsedTurn === turn ? "技能已用" : "泰坦技能" };
   if (minion.cannotAttack) return { ready: false, label: "无法攻击" };
@@ -940,7 +991,8 @@ function minionAttackStatus(minion: PublicGameState["players"][number]["board"][
   const maxAttacks = minion.keywords.includes("windfury") ? 2 : 1;
   if (minion.attacksThisTurn >= maxAttacks) return { ready: false, label: "已攻击" };
   if (minion.summonedTurn === turn) {
-    if (minion.keywords.includes("charge")) return { ready: true, label: "可攻击" };
+    const hasTundraRhino = Boolean(card?.races?.includes("BEAST") && friendlyBoard.some((ally) => !ally.silenced && cardMap.get(ally.cardId)?.rules?.includes("beast_tundra_rhino")));
+    if (minion.keywords.includes("charge") || hasTundraRhino) return { ready: true, label: "可攻击" };
     if (minion.keywords.includes("rush")) return { ready: true, label: "可突袭" };
     return { ready: false, label: "下回合" };
   }

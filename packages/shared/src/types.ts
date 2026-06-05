@@ -185,7 +185,38 @@ export type CardRuleTag =
   | "hunter_glacial_shard"
   | "hunter_mad_alchemist"
   | "hunter_niri_of_ungoro"
+  | "hunter_archbishop_nelle"
+  | "hunter_beaststalker_tavish"
+  | "hunter_heart_of_stranglethorn"
+  | "hunter_zuljin"
+  | "hunter_secret_improved_frost_trap"
+  | "hunter_secret_improved_explosive_trap"
+  | "hunter_secret_improved_snake_trap"
+  | "hunter_secret_improved_pack_tactics"
+  | "hunter_secret_improved_open_the_cages"
   | "hunter_deafening_roar"
+  | "beast_generic_battlecry"
+  | "beast_generic_deathrattle"
+  | "beast_generic_damage"
+  | "beast_generic_end_turn"
+  | "beast_generic_attack"
+  | "beast_red_herring"
+  | "beast_magmaw_colossal"
+  | "beast_magmaw_limb"
+  | "beast_stealth"
+  | "beast_tundra_rhino"
+  | "beast_swamp_king_dred"
+  | "beast_corridor_creeper"
+  | "beast_cleave_attack"
+  | "beast_spellburst_destroy"
+  | "beast_loot_spellward"
+  | "beast_inspire_team_buff"
+  | "beast_octomasseuse"
+  | "beast_knuckles"
+  | "beast_frozen"
+  | "beast_kindred_attack"
+  | "beast_baku"
+  | "beast_leokk_aura"
   | "mage_ice_lance"
   | "mage_arcane_missiles"
   | "mage_frostbolt"
@@ -371,6 +402,7 @@ export interface BoardMinion extends CardInstance {
   frozenUntilTurn?: number;
   expiresAtEndOfTurn?: boolean;
   counterNextCardType?: "minion" | "spell";
+  spellburstUsed?: boolean;
   borrowedByInstanceId?: string;
   borrowedFromSeat?: Seat;
   usedTitanAbilityCardIds?: string[];
@@ -469,6 +501,8 @@ export interface PlayerGameState {
   spellsCastThisGame?: number;
   forgedThisGame?: boolean;
   animalCompanionReplacementCost?: number;
+  animalCompanionReplacementPools?: Record<string, string[]>;
+  animalCompanionRollCounter?: number;
   animalCompanionExtraSummons?: number;
   hunterRangersPlayed?: {
     aurelia?: boolean;
@@ -476,6 +510,7 @@ export interface PlayerGameState {
     sylvanas?: boolean;
   };
   hunterOneCostCardsPlayed?: string[];
+  hunterSpellsCastThisGame?: string[];
   kiljaedenPortal?: {
     bonus: number;
     demonCardIds: string[];

@@ -148,6 +148,10 @@ export function toPublicGameState(game: GameState, viewerNickname: string): Publ
   const viewerSeat = seatFor(game, viewerNickname);
   const players = game.players.map((player) => ({
     ...player,
+    board: player.board.map((minion) => ({
+      ...minion,
+      attack: minion.attack + player.board.filter((ally) => ally.instanceId !== minion.instanceId && !ally.silenced && ally.cardId === "companion_token_leokk").length
+    })),
     specials: player.specials ?? [],
     deck: undefined,
     deckCount: player.deck.length,
@@ -169,6 +173,7 @@ function createPlayerState(seat: Seat, input: GamePlayerInput, catalog: Map<stri
   const deckCards = input.deck.cardIds.map((cardId) => getCard(catalog, cardId));
   const startingHealth = Math.max(GAME_RULES.heroHealth, ...deckCards.map((card) => card.deckRules?.startingHealth ?? 0));
   const hasBenedictus = deckCards.some((card) => hasRule(card, "priest_benedictus"));
+  const hasBakuUpgrade = deckCards.some((card) => hasRule(card, "beast_baku")) && deckCards.every((card) => card.cost % 2 === 1);
   return {
     seat,
     nickname: input.nickname,
@@ -180,7 +185,8 @@ function createPlayerState(seat: Seat, input: GamePlayerInput, catalog: Map<stri
       temporaryAttack: 0,
       attacksThisTurn: 0,
       heroPowerUsed: false,
-      heroPowerCardId: hasBenedictus ? "hero_power_mind_spike" : undefined
+      heroPowerCardId: hasBenedictus ? "hero_power_mind_spike" : undefined,
+      heroPowerCost: hasBakuUpgrade ? 1 : undefined
     },
     deck: input.deck.cardIds.map((cardId) => createInstance(cardId, seat, "starting_deck")),
     hand: [],
@@ -276,7 +282,14 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
   if (consumedSpellDiscount) delete player.nextSpellDiscount;
   game.ceaselessTrackingStarted = true;
   countCeaselessEvent(game, card.type === "spell" ? "法术被使用" : "卡牌被使用");
-  if (card.type === "spell") player.spellsCastThisGame = (player.spellsCastThisGame ?? 0) + 1;
+  if (card.type === "spell" && triggerOpponentSpellSecrets(game, seat, instance, card, catalog)) {
+    recordCardPlayed(player);
+    return;
+  }
+  if (card.type === "spell") {
+    player.spellsCastThisGame = (player.spellsCastThisGame ?? 0) + 1;
+    recordHunterSpellCast(player, card);
+  }
   if (counterPlayedCard(game, seat, card, catalog)) {
     player.graveyard.push(card.id);
     recordCardPlayed(player);
@@ -291,6 +304,7 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
 
   if (card.type === "minion") {
     const minion = createBoardMinion(applyCrystalCoreToInstance(game, seat, instance, catalog), card, game.turn);
+    applyBeastSummonState(game, seat, minion, card, catalog);
     player.board.push(minion);
     if (hasRule(card, "dragon_death_beetle") && player.maxMana >= 11) {
       applyStatEffect(minion, 4, 4);
@@ -305,6 +319,7 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
       applyStatEffect(minion, minion.attack, minion.maxHealth);
       addLog(game, `${card.name} 被环形山的尼利翻倍了属性。`);
     }
+    triggerColossalOnSummon(game, seat, card, catalog);
     addLog(game, `${player.nickname} 召唤了 ${card.name}。`);
     trackQuestMinionPlayed(game, seat, card, catalog);
     maybeSummonPatches(game, seat, card, catalog);
@@ -315,6 +330,7 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
     }
     beginCardChoice(game, seat, card, catalog, minion.instanceId);
     updateFloopCopies(player, card, minion.instanceId);
+    triggerSwampKingDred(game, seat, minion, catalog);
   } else if (card.type === "spell") {
     addLog(game, `${player.nickname} 使用了 ${card.name}。`);
     applyEffects(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "play" }, catalog);
@@ -324,8 +340,10 @@ function playCard(game: GameState, seat: Seat, handInstanceId: string, target: T
       applyEffects(game, { sourceCard: card, sourceOwner: seat, selectedTarget: target, trigger: "play" }, catalog);
       applyRulePlay(game, seat, instance, card, target, catalog, true);
     }
+    triggerBrollAfterSpell(game, seat, catalog, card.name);
+    thawFrozenBeastsForFireSpell(game, seat, card, catalog);
+    triggerBeastSpellburst(game, seat, catalog, card.name);
     beginCardChoice(game, seat, card, catalog);
-    if (!game.pendingChoice) triggerBrollAfterSpell(game, seat, catalog, card.name);
     const remainingUses = instance.remainingUses ?? card.repeatableUses ?? 1;
     if (remainingUses > 1) player.hand.push({ ...instance, remainingUses: remainingUses - 1 });
     else player.graveyard.push(card.id);
@@ -512,8 +530,11 @@ function applyRuleBattlecry(game: GameState, seat: Seat, instance: CardInstance,
   if (hasRule(card, "hunter_ranger_vereesa")) rangerVereesa(game, seat, catalog, card.name);
   if (hasRule(card, "hunter_ranger_sylvanas")) rangerSylvanas(game, seat, catalog, card.name);
   if (hasRule(card, "hunter_taya_runetotem")) tayaRunetotem(game, seat, card.name);
-  if (hasRule(card, "hunter_migrating_elekk")) upgradeAnimalCompanions(game, seat, 1, card.name);
+  if (hasRule(card, "hunter_migrating_elekk")) upgradeAnimalCompanions(game, seat, 1, card.name, catalog);
+  if (hasRule(card, "hunter_archbishop_nelle")) archbishopNelle(game, seat, catalog, card.name);
   if (hasRule(card, "hunter_glacial_shard")) freezeTarget(game, target, catalog, card.name);
+  if (hasRule(card, "beast_generic_battlecry")) beastGenericBattlecry(game, seat, instance.instanceId, card, target, catalog);
+  if (hasRule(card, "beast_kindred_attack")) beastKindredAttack(game, seat, instance.instanceId, target, catalog, card.name);
   if (hasRule(card, "rogue_fire_fly")) addCardToHand(game, seat, createInstance("quest_rogue_flame_elemental", seat), catalog, `获得了 ${getCard(catalog, "quest_rogue_flame_elemental").name}。`);
   if (hasRule(card, "rogue_swashburglar_huckster")) addRandomOpponentClassCard(game, seat, catalog, card.name);
   if (hasRule(card, "rogue_youthful_brewmaster")) returnFriendlyMinionToHand(game, seat, target, catalog, card.name, 0);
@@ -567,9 +588,12 @@ function applyRulePlay(game: GameState, seat: Seat, instance: CardInstance, card
   if (hasRule(card, "hunter_wound_prey")) woundPrey(game, seat, target, catalog, card.name);
   if (hasRule(card, "hunter_sands_of_time")) discoverSpell(game, seat, catalog, card.name);
   if (hasRule(card, "hunter_face_the_tolvir")) faceTheTolvir(game, seat, catalog, card.name);
-  if (hasRule(card, "hunter_tame_beast")) upgradeAnimalCompanions(game, seat, 1, card.name);
-  if (hasRule(card, "hunter_free_roam")) upgradeAnimalCompanions(game, seat, 2, card.name);
+  if (hasRule(card, "hunter_tame_beast")) upgradeAnimalCompanions(game, seat, 1, card.name, catalog);
+  if (hasRule(card, "hunter_free_roam")) upgradeAnimalCompanions(game, seat, 2, card.name, catalog);
   if (hasRule(card, "hunter_call_of_the_wild")) callOfTheWild(game, seat, catalog, card.name);
+  if (hasRule(card, "hunter_beaststalker_tavish")) beaststalkerTavish(game, seat, catalog, card.name);
+  if (hasRule(card, "hunter_heart_of_stranglethorn")) heartOfStranglethorn(game, seat, catalog, card.name);
+  if (hasRule(card, "hunter_zuljin")) zuljinBattlecry(game, seat, catalog, card.name);
   if (hasRule(card, "hunter_deafening_roar")) deafeningRoar(game, seat, target, catalog, card.name);
   if (hasRule(card, "mage_ice_lance")) iceLance(game, seat, target, catalog, card);
   if (hasRule(card, "mage_arcane_missiles")) arcaneMissiles(game, seat, card, catalog);
@@ -878,6 +902,11 @@ function recordHunterOneCostCardPlayed(player: PlayerGameState, card: CardDefini
   player.hunterOneCostCardsPlayed = [...(player.hunterOneCostCardsPlayed ?? []), card.id];
 }
 
+function recordHunterSpellCast(player: PlayerGameState, card: CardDefinition): void {
+  if (card.type !== "spell" || (card.class !== "hunter" && card.class !== "neutral")) return;
+  player.hunterSpellsCastThisGame = [...(player.hunterSpellsCastThisGame ?? []), card.id];
+}
+
 function hunterNiriActive(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): boolean {
   return game.players[seat].board.some((minion) =>
     !minion.silenced && hasRule(getCard(catalog, minion.cardId), "hunter_niri_of_ungoro")
@@ -908,12 +937,13 @@ function summonAnimalCompanionCard(game: GameState, seat: Seat, catalog: Map<str
 function summonAnimalCompanionOnce(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string, fixedCardId?: string): void {
   const player = game.players[seat];
   const replacementCost = player.animalCompanionReplacementCost;
+  const roll = (player.animalCompanionRollCounter ?? 0) + 1;
+  player.animalCompanionRollCounter = roll;
   const cardId = replacementCost
-    ? randomBeastForCompanion(game, seat, catalog, replacementCost, sourceName)
-    : fixedCardId ?? randomFrom(game, seat, animalCompanionTokenIds(), sourceName);
+    ? randomBeastForCompanion(game, seat, catalog, replacementCost, sourceName, roll)
+    : fixedCardId ?? randomFrom(game, seat, animalCompanionTokenIds(), `${sourceName}:${roll}`);
   const summoned = summonMinionForRule(game, seat, cardId, catalog);
   if (!summoned) return;
-  if (cardId === "companion_token_leokk") applyLeokkBuff(game, seat, summoned.instanceId);
   addLog(game, `${sourceName} 召唤了 ${getCard(catalog, cardId).name}。`);
 }
 
@@ -922,7 +952,21 @@ function randomFrom(game: GameState, seat: Seat, values: string[], salt: string)
   return values[Math.floor(random() * values.length)];
 }
 
-function randomBeastForCompanion(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, cost: number, sourceName: string): string {
+function randomBeastForCompanion(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, cost: number, sourceName: string, roll: number): string {
+  const poolIds = ensureAnimalCompanionReplacementPool(game, seat, catalog, cost, sourceName);
+  if (poolIds.length > 0) {
+    const random = rng(game.seed + game.turn * 983 + seat * 181 + poolIds.length * 17 + sourceName.length + cost * 37 + roll * 53 + game.logs.length);
+    return poolIds[Math.floor(random() * poolIds.length)];
+  }
+  return randomFrom(game, seat, animalCompanionTokenIds(), `${sourceName}:${roll}`);
+}
+
+function ensureAnimalCompanionReplacementPool(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, cost: number, sourceName: string): string[] {
+  const player = game.players[seat];
+  const key = String(cost);
+  player.animalCompanionReplacementPools ??= {};
+  const existing = player.animalCompanionReplacementPools[key];
+  if (existing?.length) return existing;
   const playerClass = game.players[seat].class;
   const beasts = [...catalog.values()].filter((card) =>
     card.collectible &&
@@ -933,9 +977,18 @@ function randomBeastForCompanion(game: GameState, seat: Seat, catalog: Map<strin
   const exact = beasts.filter((card) => card.cost === cost);
   const pool = exact.length > 0 ? exact : beasts.filter((card) => Math.abs(card.cost - cost) <= 1);
   const fallback = pool.length > 0 ? pool : beasts;
-  if (fallback.length === 0) return randomFrom(game, seat, animalCompanionTokenIds(), sourceName);
+  if (fallback.length === 0) return [];
   const random = rng(game.seed + game.turn * 991 + seat * 191 + cost * 31 + fallback.length + game.logs.length);
-  return fallback[Math.floor(random() * fallback.length)].id;
+  const candidates = [...fallback];
+  const chosen: string[] = [];
+  while (candidates.length > 0 && chosen.length < 3) {
+    const index = Math.floor(random() * candidates.length);
+    const [picked] = candidates.splice(index, 1);
+    if (picked) chosen.push(picked.id);
+  }
+  player.animalCompanionReplacementPools[key] = chosen;
+  addLog(game, `${sourceName} 生成了 ${cost} 费动物伙伴野兽池：${chosen.map((cardId) => getCard(catalog, cardId).name).join("、")}。`);
+  return chosen;
 }
 
 function summonMinionForRule(game: GameState, seat: Seat, cardId: string, catalog: Map<string, CardDefinition>): BoardMinion | undefined {
@@ -944,14 +997,10 @@ function summonMinionForRule(game: GameState, seat: Seat, cardId: string, catalo
   const card = getCard(catalog, cardId);
   if (card.type !== "minion") throw new Error("只能召唤随从。");
   const minion = createBoardMinion(applyCrystalCoreToInstance(game, seat, createInstance(cardId, seat), catalog), card, game.turn);
+  applyBeastSummonState(game, seat, minion, card, catalog);
   player.board.push(minion);
+  triggerColossalOnSummon(game, seat, card, catalog);
   return minion;
-}
-
-function applyLeokkBuff(game: GameState, seat: Seat, sourceInstanceId: string): void {
-  for (const minion of game.players[seat].board) {
-    if (minion.instanceId !== sourceInstanceId) applyStatEffect(minion, 1, 0);
-  }
 }
 
 function callOfTheWild(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
@@ -960,9 +1009,10 @@ function callOfTheWild(game: GameState, seat: Seat, catalog: Map<string, CardDef
   for (let index = 0; index < extras; index += 1) summonAnimalCompanionOnce(game, seat, catalog, `${sourceName}的额外伙伴`);
 }
 
-function upgradeAnimalCompanions(game: GameState, seat: Seat, amount: number, sourceName: string): void {
+function upgradeAnimalCompanions(game: GameState, seat: Seat, amount: number, sourceName: string, catalog: Map<string, CardDefinition>): void {
   const player = game.players[seat];
   player.animalCompanionReplacementCost = Math.min(10, (player.animalCompanionReplacementCost ?? 3) + amount);
+  ensureAnimalCompanionReplacementPool(game, seat, catalog, player.animalCompanionReplacementCost, sourceName);
   addLog(game, `${sourceName} 将此后的动物伙伴替换为 ${player.animalCompanionReplacementCost} 费随机野兽。`);
 }
 
@@ -991,7 +1041,7 @@ function replayHunterOneCostCard(game: GameState, seat: Seat, cardId: string, ca
   if (hasRule(card, "hunter_sands_of_time")) discoverSpell(game, seat, catalog, sourceName);
   if (hasRule(card, "hunter_tame_beast")) {
     drawCards(game, seat, 1, catalog, true);
-    upgradeAnimalCompanions(game, seat, 1, sourceName);
+    upgradeAnimalCompanions(game, seat, 1, sourceName, catalog);
   }
   if (hasRule(card, "hunter_deafening_roar")) deafeningRoar(game, seat, target, catalog, sourceName);
 }
@@ -1085,6 +1135,127 @@ function tayaRunetotem(game: GameState, seat: Seat, sourceName: string): void {
   addLog(game, `${sourceName} 让此后召唤动物伙伴的卡牌额外召唤一个伙伴。`);
 }
 
+function archbishopNelle(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  player.hero.heroPowerCardId = "hero_power_hunter_tracking";
+  player.hero.heroPowerCost = 1;
+  addLog(game, `${sourceName} 将英雄技能替换为 ${getCard(catalog, "hero_power_hunter_tracking").name}。`);
+}
+
+function beaststalkerTavish(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  player.hero.heroPowerCardId = "hero_power_tavish_beast_companion";
+  player.hero.heroPowerCost = 2;
+  castImprovedHunterSecrets(game, seat, catalog, sourceName);
+  addLog(game, `${sourceName} 将英雄技能替换为召唤动物伙伴。`);
+}
+
+function triggerColossalOnSummon(game: GameState, seat: Seat, card: CardDefinition, catalog: Map<string, CardDefinition>): void {
+  if (hasRule(card, "beast_magmaw_colossal")) summonMagmawLimbs(game, seat, catalog, card.name);
+}
+
+function summonMagmawLimbs(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  let summoned = 0;
+  while (occupiedBoardSlots(player) < GAME_RULES.maxBoardSize) {
+    const limbCard = getCard(catalog, "beast_token_magmaw_limb");
+    const limb = createBoardMinion(applyCrystalCoreToInstance(game, seat, createInstance("beast_token_magmaw_limb", seat), catalog), limbCard, game.turn);
+    player.board.push(limb);
+    summoned += 1;
+  }
+  if (summoned > 0) addLog(game, `${sourceName} 的巨型效果召唤了 ${summoned} 个肢节。`);
+}
+
+function magmawLimbDeathrattle(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const candidates = game.players[seat].board.filter((minion) => minion.health > 0);
+  if (candidates.length === 0) return;
+  const random = rng(game.seed + game.turn * 379 + seat * 83 + candidates.length + game.logs.length);
+  const target = candidates[Math.floor(random() * candidates.length)];
+  if (!target) return;
+  applyStatEffect(target, 2, 0);
+  addLog(game, `${sourceName} 的亡语使 ${getCard(catalog, target.cardId).name} 获得+2攻击力。`);
+}
+
+function improvedHunterSecretIds(): string[] {
+  return [
+    "hunter_secret_improved_frost_trap",
+    "hunter_secret_improved_explosive_trap",
+    "hunter_secret_improved_snake_trap",
+    "hunter_secret_improved_pack_tactics",
+    "hunter_secret_improved_open_the_cages"
+  ];
+}
+
+function castImprovedHunterSecrets(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  const existing = new Set(player.secrets.map((secret) => secret.cardId));
+  const pool = improvedHunterSecretIds().filter((cardId) => !existing.has(cardId));
+  const random = rng(game.seed + game.turn * 373 + seat * 79 + player.secrets.length + game.logs.length);
+  const chosen: string[] = [];
+  while (pool.length > 0 && chosen.length < 2) {
+    const index = Math.floor(random() * pool.length);
+    const [cardId] = pool.splice(index, 1);
+    if (cardId) chosen.push(cardId);
+  }
+  for (const cardId of chosen) {
+    player.secrets.push(createInstance(cardId, seat));
+    addLog(game, `${sourceName} 施放了 ${getCard(catalog, cardId).name}。`);
+  }
+}
+
+function heartOfStranglethorn(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const player = game.players[seat];
+  const deadBeasts = player.graveyard
+    .map((cardId) => catalog.get(cardId))
+    .filter((card): card is CardDefinition => card !== undefined && card.type === "minion" && hasRace(card, "BEAST") && (card.cost ?? 0) >= 5);
+  let revived = 0;
+  for (const card of deadBeasts) {
+    if (occupiedBoardSlots(player) >= GAME_RULES.maxBoardSize) break;
+    if (summonMinionForRule(game, seat, card.id, catalog)) revived += 1;
+  }
+  addLog(game, `${sourceName} 复活了 ${revived} 个法力值消耗大于或等于（5）的友方野兽。`);
+}
+
+function zuljinBattlecry(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const spells = [...(game.players[seat].hunterSpellsCastThisGame ?? [])];
+  let replayed = 0;
+  for (const cardId of spells) {
+    const card = catalog.get(cardId);
+    if (!card || card.type !== "spell") continue;
+    replayHunterSpellForZuljin(game, seat, card, catalog, sourceName);
+    replayed += 1;
+  }
+  addLog(game, `${sourceName} 重新施放了 ${replayed} 张本局对战中使用过的猎人法术。`);
+}
+
+function replayHunterSpellForZuljin(game: GameState, seat: Seat, card: CardDefinition, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const target = defaultEnemyTarget(game, seat, card);
+  if (hasRule(card, "hunter_tracking")) drawCards(game, seat, 1, catalog, true);
+  if (hasRule(card, "hunter_animal_companion")) summonAnimalCompanionCard(game, seat, catalog, sourceName);
+  if (hasRule(card, "hunter_wound_prey")) woundPrey(game, seat, target, catalog, sourceName);
+  if (hasRule(card, "hunter_sands_of_time")) addRandomSpellToHand(game, seat, catalog, sourceName);
+  if (hasRule(card, "hunter_face_the_tolvir")) faceTheTolvir(game, seat, catalog, sourceName);
+  if (hasRule(card, "hunter_tame_beast")) {
+    drawCards(game, seat, 1, catalog, true);
+    upgradeAnimalCompanions(game, seat, 1, sourceName, catalog);
+  }
+  if (hasRule(card, "hunter_free_roam")) {
+    upgradeAnimalCompanions(game, seat, 2, sourceName, catalog);
+    summonAnimalCompanionCard(game, seat, catalog, sourceName);
+  }
+  if (hasRule(card, "hunter_call_of_the_wild")) callOfTheWild(game, seat, catalog, sourceName);
+  if (hasRule(card, "hunter_heart_of_stranglethorn")) heartOfStranglethorn(game, seat, catalog, sourceName);
+  if (hasRule(card, "hunter_deafening_roar")) deafeningRoar(game, seat, target, catalog, sourceName);
+}
+
+function addRandomSpellToHand(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const pool = [...catalog.values()].filter((card) => card.collectible && card.type === "spell");
+  if (pool.length === 0) return;
+  const picked = pool[Math.floor(rng(game.seed + game.turn * 359 + seat * 73 + pool.length + game.logs.length)() * pool.length)];
+  if (!picked) return;
+  addCardToHand(game, seat, createInstance(picked.id, seat), catalog, `${sourceName} 获取了 ${picked.name}。`);
+}
+
 function madAlchemist(game: GameState, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
   if (!target || target.type !== "minion") throw new Error(`${sourceName} 需要选择一个随从。`);
   const minion = findMinion(game, target);
@@ -1103,6 +1274,283 @@ function deafeningRoar(game: GameState, seat: Seat, target: TargetRef | undefine
   if (!minion) return;
   setMaxHealthByEffect(minion, 1);
   minion.health = Math.min(minion.health, 1);
+}
+
+function beastGenericBattlecry(game: GameState, seat: Seat, sourceInstanceId: string, card: CardDefinition, target: TargetRef | undefined, catalog: Map<string, CardDefinition>): void {
+  const text = card.text;
+  const source = game.players[seat].board.find((minion) => minion.instanceId === sourceInstanceId);
+  if (text.includes("如果它是战场上唯一的一个随从") && source && game.players[0].board.length + game.players[1].board.length === 1) applyStatEffect(source, 3, 3);
+  if (text.includes("如果你没有其他手牌") && source && game.players[seat].hand.length === 0) applyStatEffect(source, 3, 3);
+  if (text.includes("敌方英雄") && text.includes("造成3点伤害")) {
+    dealDamage(game, { type: "hero", seat: other(seat) }, 3, seat, catalog, false);
+    if (text.includes("恢复")) heal(game, { type: "hero", seat }, 3, catalog);
+  }
+  if (text.includes("造成3点伤害") && target) dealDamage(game, target, 3, seat, catalog, false);
+  else if (text.includes("造成4点伤害") && target) dealDamage(game, target, 4, seat, catalog, false);
+  else if (text.includes("造成5点伤害") && target) dealDamage(game, target, 5, seat, catalog, false);
+  else if (text.includes("造成6点伤害") && target) dealDamage(game, target, 6, seat, catalog, false);
+  if (text.includes("造成等同于本随从攻击力的伤害") && target && source) dealDamage(game, target, source.attack, seat, catalog, false);
+  if (text.includes("对本随从造成6点伤害") && source) dealDamage(game, { type: "minion", seat, instanceId: source.instanceId }, 6, seat, catalog, false);
+  if (text.includes("对本随从造成10点伤害") && source) dealDamage(game, { type: "minion", seat, instanceId: source.instanceId }, 10, seat, catalog, false);
+  if (text.includes("你的对手每有一张手牌") && source) setMaxHealthByEffect(source, Math.max(1, source.maxHealth - game.players[other(seat)].hand.length));
+  if (text.includes("抽一张")) drawCards(game, seat, 1, catalog, true);
+  if (text.includes("抽五张不同的奥秘")) drawCards(game, seat, 5, catalog, true);
+  if (text.includes("发现一张野兽牌")) discoverBeast(game, seat, catalog, card.name);
+  if (text.includes("随机获取一张法力值消耗为（1）的随从牌")) randomOneCostCardToHand(game, seat, catalog, "minion", card.name);
+  if (text.includes("用1/1并具有突袭") || text.includes("填满你的手牌")) {
+    while (game.players[seat].hand.length < GAME_RULES.maxHandSize) addCardToHand(game, seat, createInstance("companion_token_hyena", seat), catalog, `${card.name} 获取了山猫。`);
+  }
+  if (text.includes("将两根香蕉置入你的手牌") || text.includes("获取一张无穷香蕉")) addBananasToHand(game, seat, catalog, text.includes("两根") ? 2 : 1, card.name);
+  if (text.includes("用香蕉填满你对手的手牌")) {
+    while (game.players[other(seat)].hand.length < GAME_RULES.maxHandSize) addCardToHand(game, other(seat), createInstance("beast_token_banana", other(seat)), catalog, `${card.name} 塞入了一根香蕉。`);
+  }
+  if (text.includes("召唤三只1/1并具有突袭")) summon(game, seat, "companion_token_hyena", 3, catalog);
+  if (text.includes("召唤一个本随从的复制")) summon(game, seat, card.id, 1, catalog);
+  if (text.includes("召唤一个它的复制") && source && source.attack >= 4) summon(game, seat, card.id, 1, catalog);
+  if (text.includes("随机消灭一个攻击力小于或等于2的敌方随从")) destroyRandomEnemyMinion(game, seat, catalog, card.name, (minion) => minion.attack <= 2);
+  if (text.includes("消灭攻击力最低的敌方随从")) destroyExtremeAttackEnemyMinion(game, seat, catalog, card.name, "min");
+  if (text.includes("消灭攻击力最高的敌方随从")) destroyExtremeAttackEnemyMinion(game, seat, catalog, card.name, "max");
+  if (text.includes("消灭一个随从") && target?.type === "minion") {
+    const victim = findMinion(game, target);
+    if (victim && source && text.includes("获得被消灭随从的属性值")) applyStatEffect(source, victim.attack, victim.maxHealth);
+    destroy(game, target, catalog);
+  }
+  if (text.includes("获得+1攻击力和突袭") && source) {
+    applyStatEffect(source, 1, 0);
+    addKeyword(source, "rush");
+  }
+  if (text.includes("获得+3/+3") && source && !text.includes("唯一")) applyStatEffect(source, 3, 3);
+  if (text.includes("获得嘲讽") && source) addKeyword(source, "taunt");
+  if (text.includes("获得冲锋") && source) {
+    addKeyword(source, "charge");
+    source.exhausted = false;
+  }
+  if (text.includes("获得圣盾") && source) addKeyword(source, "divine_shield");
+  if (text.includes("使一个友方随从获得+4/+4和嘲讽") && target?.type === "minion" && target.seat === seat) {
+    buff(game, target, 4, 4, catalog);
+    const minion = findMinion(game, target);
+    if (minion) addKeyword(minion, "taunt");
+  }
+  if (text.includes("交换攻击力") && target?.type === "minion" && source) swapMinionAttack(source, findMinion(game, target));
+  if (text.includes("交换生命值") && target?.type === "minion" && source) swapMinionHealth(source, findMinion(game, target));
+}
+
+function applyBeastSummonState(game: GameState, seat: Seat, minion: BoardMinion, card: CardDefinition, catalog: Map<string, CardDefinition>): void {
+  if (hasRule(card, "beast_stealth")) minion.untouchable = true;
+  if (hasRule(card, "beast_frozen")) minion.frozenUntilTurn = Number.MAX_SAFE_INTEGER;
+  if (hasTundraRhinoCharge(game, seat, minion, catalog)) {
+    addKeyword(minion, "charge");
+    minion.exhausted = false;
+  }
+  if (hasRule(card, "beast_tundra_rhino")) {
+    for (const ally of game.players[seat].board) {
+      if (!ally.silenced && hasRace(getCard(catalog, ally.cardId), "BEAST")) {
+        addKeyword(ally, "charge");
+        ally.exhausted = false;
+      }
+    }
+  }
+}
+
+function hasTundraRhinoCharge(game: GameState, seat: Seat, minion: BoardMinion, catalog: Map<string, CardDefinition>): boolean {
+  if (!hasRace(getCard(catalog, minion.cardId), "BEAST")) return false;
+  return game.players[seat].board.some((ally) => !ally.silenced && hasRule(getCard(catalog, ally.cardId), "beast_tundra_rhino"));
+}
+
+function beastKindredAttack(game: GameState, seat: Seat, sourceInstanceId: string, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const source = game.players[seat].board.find((minion) => minion.instanceId === sourceInstanceId);
+  if (!source || !target || target.type !== "minion" || target.seat !== other(seat)) return;
+  dealDamage(game, target, source.attack, seat, catalog, false);
+  addLog(game, `${sourceName} 对敌方随从造成了等同于自身攻击力的伤害。`);
+}
+
+function triggerBeastSpellburst(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, spellName: string): void {
+  for (const minion of game.players[seat].board) {
+    if (minion.silenced || minion.spellburstUsed) continue;
+    const card = getCard(catalog, minion.cardId);
+    if (!hasRule(card, "beast_spellburst_destroy")) continue;
+    minion.spellburstUsed = true;
+    destroyRandomEnemyMinion(game, seat, catalog, `${card.name} 的法术迸发`);
+    addLog(game, `${card.name} 响应 ${spellName} 触发了法术迸发。`);
+  }
+}
+
+function triggerBeastInspire(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
+  for (const source of game.players[seat].board) {
+    if (source.silenced || !hasRule(getCard(catalog, source.cardId), "beast_inspire_team_buff")) continue;
+    for (const minion of game.players[seat].board) {
+      if (minion.instanceId !== source.instanceId) applyStatEffect(minion, 1, 1);
+    }
+    addLog(game, `${getCard(catalog, source.cardId).name} 的激励使其他友方随从获得+1/+1。`);
+  }
+}
+
+function reduceCorridorCreepersInHands(game: GameState, catalog: Map<string, CardDefinition>): void {
+  for (const player of game.players) {
+    for (const instance of player.hand) {
+      const card = getCard(catalog, instance.cardId);
+      if (!hasRule(card, "beast_corridor_creeper")) continue;
+      const currentCost = instance.costOverride ?? card.cost;
+      instance.costOverride = Math.max(0, currentCost - 1);
+    }
+  }
+}
+
+function triggerSwampKingDred(game: GameState, playedSeat: Seat, playedMinion: BoardMinion, catalog: Map<string, CardDefinition>): void {
+  const dredSeat = other(playedSeat);
+  const dred = game.players[dredSeat].board.find((minion) => !minion.silenced && hasRule(getCard(catalog, minion.cardId), "beast_swamp_king_dred"));
+  if (!dred || dred.health <= 0 || playedMinion.health <= 0) return;
+  dealDamage(game, { type: "minion", seat: playedSeat, instanceId: playedMinion.instanceId }, minionAttackValue(game, dredSeat, dred, catalog), dredSeat, catalog, dred.keywords.includes("lifesteal"));
+  dealDamage(game, { type: "minion", seat: dredSeat, instanceId: dred.instanceId }, minionAttackValue(game, playedSeat, playedMinion, catalog), playedSeat, catalog, playedMinion.keywords.includes("lifesteal"));
+  dred.attacksThisTurn += 1;
+  addLog(game, `${getCard(catalog, dred.cardId).name} 攻击了刚被使用的 ${getCard(catalog, playedMinion.cardId).name}。`);
+}
+
+function thawFrozenBeastsForFireSpell(game: GameState, seat: Seat, card: CardDefinition, catalog: Map<string, CardDefinition>): void {
+  if (!card.name.includes("火") && !card.text.includes("火")) return;
+  for (const minion of game.players[seat].board) {
+    if (!minion.silenced && hasRule(getCard(catalog, minion.cardId), "beast_frozen")) delete minion.frozenUntilTurn;
+  }
+}
+
+function beastGenericDeathrattle(game: GameState, seat: Seat, minion: BoardMinion, card: CardDefinition, catalog: Map<string, CardDefinition>): void {
+  const text = card.text;
+  if (text.includes("召唤两只2/2的土狼")) summon(game, seat, "beast_token_hyena_2_2", 2, catalog);
+  if (text.includes("召唤两只2/4并具有嘲讽")) summon(game, seat, "beast_token_bear_cub", 2, catalog);
+  if (text.includes("召唤两只1/1并具有剧毒和突袭")) summon(game, seat, "beast_token_spider_poison_rush", 2, catalog);
+  if (text.includes("召唤两只1/1的蜘蛛")) summon(game, seat, "beast_token_spider", 2, catalog);
+  if (text.includes("召唤七只1/1的肉虫")) summon(game, seat, "beast_token_grub", 7, catalog);
+  if (text.includes("召唤三个1/1的鱼人")) summon(game, seat, "beast_token_murloc_1_1", 3, catalog);
+  if (text.includes("为你的对手召唤一个3/3")) summon(game, other(seat), "beast_token_pip_quickwit", 1, catalog);
+  if (text.includes("奥的灰烬")) summon(game, seat, "beast_token_alar_ashes", 1, catalog);
+  if (text.includes("抽八张牌")) drawCards(game, seat, 8, catalog, true);
+  if (text.includes("你的对手抽两张牌")) drawCards(game, other(seat), 2, catalog, true);
+  if (text.includes("对所有敌方随从造成2点伤害")) damageEnemyMinions(game, seat, 2, catalog);
+  if (text.includes("对所有敌方随从造成3点")) damageEnemyMinions(game, seat, 3, catalog);
+  if (text.includes("随机对一个敌人造成8点伤害")) damageRandomEnemyTarget(game, seat, 8, catalog, card.name);
+  if (text.includes("随机对一个敌人造成7点伤害")) damageRandomEnemyTarget(game, seat, 7, catalog, card.name);
+  if (text.includes("随机消灭一个敌方随从")) destroyRandomEnemyMinion(game, seat, catalog, card.name);
+  if (text.includes("随机召唤一只法力值消耗为（3）的野兽")) summonRandomBeast(game, seat, 3, catalog, card.name);
+  if (text.includes("随机召唤一只法力值消耗等同于本随从攻击力的")) summonRandomBeast(game, seat, Math.max(0, minion.attack), catalog, card.name);
+  if (text.includes("随机获取一张亡语随从牌")) addRandomDeathrattleMinionToHand(game, seat, catalog, card.name, -2);
+  if (text.includes("巫妖王牌")) addRandomLegendaryMinionToHand(game, seat, catalog, card.name);
+}
+
+function beastGenericDamageTrigger(game: GameState, seat: Seat, minion: BoardMinion, card: CardDefinition, amount: number, catalog: Map<string, CardDefinition>): void {
+  if (amount <= 0) return;
+  const text = card.text;
+  if (text.includes("其攻击力翻倍")) applyStatEffect(minion, minion.attack, 0);
+  if (text.includes("对你的英雄造成 3点伤害") || text.includes("对你的英雄造成3点伤害")) dealDamage(game, { type: "hero", seat }, 3, seat, catalog, false);
+  if (text.includes("获取一张幸运币")) addCardToHand(game, seat, createInstance("coin", seat), catalog, `${card.name} 获取了一张幸运币。`);
+}
+
+function beastGenericEndTurn(game: GameState, seat: Seat, minion: BoardMinion, card: CardDefinition, catalog: Map<string, CardDefinition>): void {
+  if (card.text.includes("将所有敌方随从的攻击力和生命值变为1")) {
+    for (const enemy of game.players[other(seat)].board) {
+      setAttackByEffect(enemy, 1);
+      setMaxHealthByEffect(enemy, 1);
+    }
+  }
+}
+
+function beastGenericAttackTrigger(game: GameState, seat: Seat, minion: BoardMinion, target: TargetRef, catalog: Map<string, CardDefinition>): void {
+  const card = getCard(catalog, minion.cardId);
+  const text = card.text;
+  if (text.includes("使你的其他野兽获得+2/+2")) {
+    for (const otherMinion of game.players[seat].board) {
+      if (otherMinion.instanceId !== minion.instanceId && hasRace(getCard(catalog, otherMinion.cardId), "BEAST")) applyStatEffect(otherMinion, 2, 2);
+    }
+  }
+  if (text.includes("抽一张野兽牌并获得其属性值")) {
+    const drawn = drawRaceCard(game, seat, "BEAST", catalog);
+    if (drawn) {
+      const drawnCard = getCard(catalog, drawn.cardId);
+      applyStatEffect(minion, drawnCard.attack ?? 0, drawnCard.health ?? 0);
+    }
+  }
+  if (text.includes("获得一个仅限本回合可用的法力水晶")) game.players[seat].mana += 1;
+  if (text.includes("造成等同于本随从攻击力的伤害，随机分配到所有敌人身上")) dealRandomEnemyDamage(game, seat, minion.attack, catalog, card.name);
+  if (target.type === "minion" && text.includes("还会命中敌方英雄")) dealDamage(game, { type: "hero", seat: other(seat) }, minion.attack, seat, catalog, minion.keywords.includes("lifesteal"));
+}
+
+function addBananasToHand(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, amount: number, sourceName: string): void {
+  for (let count = 0; count < amount; count += 1) addCardToHand(game, seat, createInstance("beast_token_banana", seat), catalog, `${sourceName} 获取了一根香蕉。`);
+}
+
+function discoverBeast(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const pool = [...catalog.values()]
+    .filter((card) => card.collectible && card.type === "minion" && hasRace(card, "BEAST") && (card.class === game.players[seat].class || card.class === "neutral"))
+    .map((card) => createInstance(card.id, seat));
+  discoverCardCopies(game, seat, pool, catalog, `${sourceName} 发现一张野兽牌。`);
+}
+
+function summonRandomBeast(game: GameState, seat: Seat, cost: number, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const pool = [...catalog.values()].filter((card) => card.collectible && card.type === "minion" && hasRace(card, "BEAST") && card.cost === cost && (card.class === game.players[seat].class || card.class === "neutral"));
+  if (pool.length === 0) return;
+  const random = rng(game.seed + game.turn * 1009 + seat * 211 + cost * 29 + pool.length);
+  summon(game, seat, pool[Math.floor(random() * pool.length)].id, 1, catalog);
+  addLog(game, `${sourceName} 随机召唤了一只 ${cost} 费野兽。`);
+}
+
+function drawRaceCard(game: GameState, seat: Seat, race: string, catalog: Map<string, CardDefinition>): CardInstance | undefined {
+  const player = game.players[seat];
+  const index = player.deck.findIndex((instance) => hasRace(getCard(catalog, instance.cardId), race));
+  if (index < 0) return undefined;
+  const [drawn] = player.deck.splice(index, 1);
+  addCardToHand(game, seat, { ...drawn, drawnTurn: game.turn }, catalog, `抽取了 ${getCard(catalog, drawn.cardId).name}。`);
+  return drawn;
+}
+
+function addRandomDeathrattleMinionToHand(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string, discount = 0): void {
+  const pool = [...catalog.values()].filter((card) => card.collectible && card.type === "minion" && card.keywords.includes("deathrattle"));
+  if (pool.length === 0) return;
+  const random = rng(game.seed + game.turn * 1013 + seat * 223 + pool.length);
+  const picked = pool[Math.floor(random() * pool.length)];
+  addCardToHand(game, seat, { ...createInstance(picked.id, seat), costOverride: Math.max(0, picked.cost + discount) }, catalog, `${sourceName} 获取了 ${picked.name}。`);
+}
+
+function damageEnemyMinions(game: GameState, seat: Seat, amount: number, catalog: Map<string, CardDefinition>): void {
+  for (const minion of [...game.players[other(seat)].board]) dealDamage(game, { type: "minion", seat: other(seat), instanceId: minion.instanceId }, amount, seat, catalog, false);
+}
+
+function damageRandomEnemyTarget(game: GameState, seat: Seat, amount: number, catalog: Map<string, CardDefinition>, sourceName: string): void {
+  const targets = [{ type: "hero" as const, seat: other(seat) }, ...game.players[other(seat)].board.map((minion) => ({ type: "minion" as const, seat: other(seat), instanceId: minion.instanceId }))];
+  if (targets.length === 0) return;
+  const random = rng(game.seed + game.turn * 1019 + seat * 227 + targets.length + amount);
+  dealDamage(game, targets[Math.floor(random() * targets.length)], amount, seat, catalog, false);
+  addLog(game, `${sourceName} 随机造成了 ${amount} 点伤害。`);
+}
+
+function destroyRandomEnemyMinion(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string, predicate: (minion: BoardMinion) => boolean = () => true): void {
+  const options = game.players[other(seat)].board.filter(predicate);
+  if (options.length === 0) return;
+  const random = rng(game.seed + game.turn * 1021 + seat * 229 + options.length);
+  const picked = options[Math.floor(random() * options.length)];
+  destroy(game, { type: "minion", seat: other(seat), instanceId: picked.instanceId }, catalog);
+  addLog(game, `${sourceName} 随机消灭了 ${getCard(catalog, picked.cardId).name}。`);
+}
+
+function destroyExtremeAttackEnemyMinion(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>, sourceName: string, mode: "min" | "max"): void {
+  const options = game.players[other(seat)].board;
+  if (options.length === 0) return;
+  const value = mode === "min" ? Math.min(...options.map((minion) => minion.attack)) : Math.max(...options.map((minion) => minion.attack));
+  const picked = options.find((minion) => minion.attack === value);
+  if (picked) destroy(game, { type: "minion", seat: other(seat), instanceId: picked.instanceId }, catalog);
+  addLog(game, `${sourceName} 消灭了一个敌方随从。`);
+}
+
+function swapMinionAttack(a: BoardMinion, b: BoardMinion | undefined): void {
+  if (!b) return;
+  const oldA = a.attack;
+  setAttackByEffect(a, b.attack);
+  setAttackByEffect(b, oldA);
+}
+
+function swapMinionHealth(a: BoardMinion, b: BoardMinion | undefined): void {
+  if (!b) return;
+  const oldA = a.maxHealth;
+  setMaxHealthByEffect(a, b.maxHealth);
+  setMaxHealthByEffect(b, oldA);
 }
 
 function gainEmptyMana(game: GameState, seat: Seat, amount: number, sourceName: string): void {
@@ -1228,7 +1676,7 @@ function freezeEnemyMinions(game: GameState, seat: Seat, catalog: Map<string, Ca
 
 function freezeTarget(game: GameState, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName?: string): void {
   if (!target) throw new Error(`${sourceName ?? "冻结效果"} 需要选择一个目标。`);
-  if (isUntouchableTarget(game, target)) throw new Error("这个随从无法成为目标。");
+  if (isUntouchableTarget(game, target, catalog)) throw new Error("这个随从无法成为目标。");
   const untilTurn = game.turn + 1;
   if (target.type === "hero") {
     const hero = game.players[target.seat].hero;
@@ -1263,7 +1711,7 @@ function arcaneMissiles(game: GameState, seat: Seat, card: CardDefinition, catal
   for (let count = 0; count < missileCount; count += 1) {
     const targets = [
       { type: "hero" as const, seat: other(seat) },
-      ...touchableMinionTargets(game.players[other(seat)].board, other(seat))
+      ...touchableMinionTargets(game, other(seat), catalog)
     ];
     if (targets.length === 0) break;
     dealDamage(game, targets[Math.floor(random() * targets.length)], 1, seat, catalog, false);
@@ -1274,7 +1722,7 @@ function arcaneMissiles(game: GameState, seat: Seat, card: CardDefinition, catal
 
 function blizzard(game: GameState, seat: Seat, card: CardDefinition, catalog: Map<string, CardDefinition>): void {
   const damage = 2 + spellDamageBonus(game, { sourceCard: card, sourceOwner: seat, trigger: "play" });
-  const targets = touchableMinionTargets(game.players[other(seat)].board, other(seat));
+  const targets = touchableMinionTargets(game, other(seat), catalog);
   for (const target of targets) dealDamage(game, target, damage, seat, catalog, false);
   for (const target of targets) {
     if (findMinion(game, target)) freezeTarget(game, target, catalog);
@@ -1284,7 +1732,7 @@ function blizzard(game: GameState, seat: Seat, card: CardDefinition, catalog: Ma
 
 function polymorph(game: GameState, target: TargetRef | undefined, catalog: Map<string, CardDefinition>, sourceName: string): void {
   if (!target || target.type !== "minion") throw new Error(`${sourceName} 需要选择一个随从。`);
-  if (isUntouchableTarget(game, target)) throw new Error("这个随从无法成为目标。");
+  if (isUntouchableTarget(game, target, catalog)) throw new Error("这个随从无法成为目标。");
   const minion = findMinion(game, target);
   if (!minion) throw new Error("变形术的目标已经离开战场。");
   minion.cardId = "freeze_token_sheep";
@@ -2579,6 +3027,8 @@ function applyRuleHeroPower(game: GameState, seat: Seat, power: CardDefinition, 
   }
   if (hasRule(power, "priest_reno_nature_bullet")) discoverSpell(game, seat, catalog, power.name);
   if (hasRule(power, "priest_reno_shadow_bullet")) summonRandomThreeCostMinion(game, seat, catalog, power.name);
+  if (hasRule(power, "hunter_tracking")) hunterTracking(game, seat);
+  if (hasRule(power, "hunter_animal_companion")) summonAnimalCompanionCard(game, seat, catalog, power.name);
 }
 
 function equipRenoBullet(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
@@ -2705,16 +3155,82 @@ function counterPlayedCard(game: GameState, seat: Seat, card: CardDefinition, ca
 }
 
 function isSecretCard(card: CardDefinition): boolean {
-  return Boolean(card.rules?.some((rule) => rule === "mage_secret_ice_block" || rule === "mage_secret_ice_barrier"));
+  return Boolean(card.rules?.some((rule) =>
+    rule === "mage_secret_ice_block" ||
+    rule === "mage_secret_ice_barrier" ||
+    rule.startsWith("hunter_secret_")
+  ));
 }
 
-function triggerSecret(game: GameState, seat: Seat, rule: "mage_secret_ice_block" | "mage_secret_ice_barrier", catalog: Map<string, CardDefinition>): CardDefinition | undefined {
+function triggerSecret(game: GameState, seat: Seat, rule: NonNullable<CardDefinition["rules"]>[number], catalog: Map<string, CardDefinition>): CardDefinition | undefined {
   const player = game.players[seat];
   const index = player.secrets.findIndex((secret) => hasRule(getCard(catalog, secret.cardId), rule));
   if (index < 0) return undefined;
   const [secret] = player.secrets.splice(index, 1);
   player.graveyard.push(secret.cardId);
   return getCard(catalog, secret.cardId);
+}
+
+function triggerOpponentSpellSecrets(game: GameState, casterSeat: Seat, instance: CardInstance, card: CardDefinition, catalog: Map<string, CardDefinition>): boolean {
+  const secretSeat = other(casterSeat);
+  const secret = triggerSecret(game, secretSeat, "hunter_secret_improved_frost_trap", catalog);
+  if (!secret) return false;
+  addCardToHand(game, casterSeat, { ...instance, owner: casterSeat, costOverride: (instance.costOverride ?? card.cost ?? 0) + 2 }, catalog, `${secret.name} 触发：${card.name} 被移回手牌，法力值消耗增加（2）点。`);
+  return true;
+}
+
+function triggerHunterAttackSecrets(game: GameState, attackerSeat: Seat, source: TargetRef, target: TargetRef, catalog: Map<string, CardDefinition>): boolean {
+  const defenderSeat = target.seat;
+  if (target.type === "hero") triggerImprovedExplosiveTrap(game, defenderSeat, catalog);
+  if (target.type === "minion") {
+    triggerImprovedSnakeTrap(game, defenderSeat, catalog);
+    triggerImprovedPackTactics(game, defenderSeat, target, catalog);
+  }
+  cleanupDeaths(game, catalog);
+  if (source.type === "minion" && !findMinion(game, source)) return true;
+  if (target.type === "minion" && !findMinion(game, target)) return true;
+  return game.phase === "finished";
+}
+
+function triggerImprovedExplosiveTrap(game: GameState, secretSeat: Seat, catalog: Map<string, CardDefinition>): void {
+  const secret = triggerSecret(game, secretSeat, "hunter_secret_improved_explosive_trap", catalog);
+  if (!secret) return;
+  const enemySeat = other(secretSeat);
+  const targets = [{ type: "hero" as const, seat: enemySeat }, ...game.players[enemySeat].board.map((minion) => ({ type: "minion" as const, seat: enemySeat, instanceId: minion.instanceId }))];
+  for (const target of targets) dealDamage(game, target, 2, secretSeat, catalog, false);
+  addLog(game, `${secret.name}触发：对所有敌人造成2点伤害。`);
+}
+
+function triggerImprovedSnakeTrap(game: GameState, secretSeat: Seat, catalog: Map<string, CardDefinition>): void {
+  const secret = triggerSecret(game, secretSeat, "hunter_secret_improved_snake_trap", catalog);
+  if (!secret) return;
+  summon(game, secretSeat, "hunter_token_improved_snake", 3, catalog);
+  addLog(game, `${secret.name}触发：召唤三条2/2的蛇。`);
+}
+
+function triggerImprovedPackTactics(game: GameState, secretSeat: Seat, target: TargetRef, catalog: Map<string, CardDefinition>): void {
+  const attacked = findMinion(game, target);
+  if (!attacked) return;
+  const secret = triggerSecret(game, secretSeat, "hunter_secret_improved_pack_tactics", catalog);
+  if (!secret) return;
+  const card = getCard(catalog, attacked.cardId);
+  let summoned = 0;
+  for (let count = 0; count < 2; count += 1) {
+    if (occupiedBoardSlots(game.players[secretSeat]) >= GAME_RULES.maxBoardSize) break;
+    const copy = createBoardMinion({ ...createInstance(attacked.cardId, secretSeat), attackOverride: 3, healthOverride: 3 }, card, game.turn);
+    game.players[secretSeat].board.push(copy);
+    summoned += 1;
+  }
+  addLog(game, `${secret.name}触发：召唤了 ${summoned} 个 ${card.name} 的3/3复制。`);
+}
+
+function triggerImprovedOpenTheCages(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
+  if (occupiedBoardSlots(game.players[seat]) < 2) return;
+  const secret = triggerSecret(game, seat, "hunter_secret_improved_open_the_cages", catalog);
+  if (!secret) return;
+  summonAnimalCompanionCard(game, seat, catalog, secret.name);
+  summonAnimalCompanionCard(game, seat, catalog, secret.name);
+  addLog(game, `${secret.name}触发：召唤两个动物伙伴。`);
 }
 
 function triggerIceBarrier(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
@@ -2748,14 +3264,15 @@ function heroPower(game: GameState, seat: Seat, target: TargetRef | undefined, c
   if (player.board.some((minion) => !minion.silenced && hasRule(getCard(catalog, minion.cardId), "priest_spawn_of_shadows"))) {
     damageBothHeroes(game, seat, 4, catalog);
   }
+  triggerBeastInspire(game, seat, catalog);
   cleanupDeaths(game, catalog);
 }
 
 function attack(game: GameState, actorSeat: Seat, source: TargetRef, target: TargetRef, catalog: Map<string, CardDefinition>): void {
   if (source.seat !== actorSeat) throw new Error("只能操作自己的角色。");
   if (target.seat === actorSeat) throw new Error("不能攻击己方角色。");
-  enforceTaunt(game, actorSeat, target);
-  if (isUntouchableTarget(game, target)) throw new Error("这个随从无法被攻击。");
+  enforceTaunt(game, actorSeat, target, catalog);
+  if (isUntouchableTarget(game, target, catalog)) throw new Error("这个随从无法被攻击。");
 
   if (source.type === "hero") {
     const player = game.players[actorSeat];
@@ -2769,6 +3286,7 @@ function attack(game: GameState, actorSeat: Seat, source: TargetRef, target: Tar
     const adjacentTargets = weapon?.ignisWeapon?.adjacentDamage && target.type === "minion"
       ? adjacentMinionTargets(game, target)
       : [];
+    if (triggerHunterAttackSecrets(game, actorSeat, source, target, catalog)) return;
     if (target.type === "hero") triggerIceBarrier(game, target.seat, catalog);
     dealDamage(game, target, heroAttack, actorSeat, catalog, Boolean(weapon?.keywords?.includes("lifesteal")));
     if (weapon?.keywords?.includes("poisonous") && target.type === "minion") {
@@ -2787,14 +3305,34 @@ function attack(game: GameState, actorSeat: Seat, source: TargetRef, target: Tar
   } else {
     const minion = findMinion(game, source);
     if (!minion) throw new Error("攻击者不存在。");
-    if (!canMinionAttack(minion, target, game.turn, catalog)) throw new Error("该随从现在不能攻击。");
+    if (!canMinionAttack(game, actorSeat, minion, target, game.turn, catalog)) throw new Error("该随从现在不能攻击。");
+    const minionCard = getCard(catalog, minion.cardId);
     const defender = getTarget(game, target);
+    const adjacentTargets = !minion.silenced && hasRule(minionCard, "beast_cleave_attack") && target.type === "minion"
+      ? adjacentMinionTargets(game, target)
+      : [];
+    if (triggerHunterAttackSecrets(game, actorSeat, source, target, catalog)) return;
     if (target.type === "hero") triggerIceBarrier(game, target.seat, catalog);
-    dealDamage(game, target, minion.attack, actorSeat, catalog, minion.keywords.includes("lifesteal"));
+    const sourceAttack = minionAttackValue(game, actorSeat, minion, catalog);
+    const attackDamage = !minion.silenced && hasRule(minionCard, "beast_octomasseuse") && target.type === "minion" ? sourceAttack * 8 : sourceAttack;
+    dealDamage(game, target, attackDamage, actorSeat, catalog, minion.keywords.includes("lifesteal"));
+    for (const adjacent of adjacentTargets) {
+      dealDamage(game, adjacent, attackDamage, actorSeat, catalog, minion.keywords.includes("lifesteal"));
+      if (minion.keywords.includes("poisonous")) {
+        const poisoned = findMinion(game, adjacent);
+        if (poisoned) poisoned.health = 0;
+      }
+    }
+    if (minion.keywords.includes("poisonous") && target.type === "minion") {
+      const poisoned = findMinion(game, target);
+      if (poisoned) poisoned.health = 0;
+    }
     if (defender.kind === "minion") {
-      dealDamage(game, source, defender.minion.attack, target.seat, catalog, defender.minion.keywords.includes("lifesteal"));
+      dealDamage(game, source, minionAttackValue(game, target.seat, defender.minion, catalog), target.seat, catalog, defender.minion.keywords.includes("lifesteal"));
     }
     minion.attacksThisTurn += 1;
+    if (!minion.silenced && hasRule(minionCard, "beast_knuckles") && target.type === "minion") dealDamage(game, { type: "hero", seat: other(actorSeat) }, sourceAttack, actorSeat, catalog, minion.keywords.includes("lifesteal"));
+    if (!minion.silenced && hasRule(getCard(catalog, minion.cardId), "beast_generic_attack")) beastGenericAttackTrigger(game, actorSeat, minion, target, catalog);
     addLog(game, `${game.players[actorSeat].nickname} 使用 ${getCard(catalog, minion.cardId).name} 发起攻击。`);
   }
   cleanupDeaths(game, catalog);
@@ -2875,12 +3413,14 @@ function startTurn(game: GameState, seat: Seat, catalog: Map<string, CardDefinit
 
 function resolveStartTurnRules(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
   const activeDoomsayers = game.players[seat].board.filter((minion) => !minion.silenced && hasRule(getCard(catalog, minion.cardId), "mage_doomsayer"));
-  if (activeDoomsayers.length === 0) return;
-  for (const player of game.players) {
-    for (const minion of player.board) minion.health = 0;
+  if (activeDoomsayers.length > 0) {
+    for (const player of game.players) {
+      for (const minion of player.board) minion.health = 0;
+    }
+    addLog(game, `${getCard(catalog, activeDoomsayers[0].cardId).name} 触发，消灭了所有随从。`);
+    cleanupDeaths(game, catalog);
   }
-  addLog(game, `${getCard(catalog, activeDoomsayers[0].cardId).name} 触发，消灭了所有随从。`);
-  cleanupDeaths(game, catalog);
+  triggerImprovedOpenTheCages(game, seat, catalog);
 }
 
 function resolveEndTurnRules(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): void {
@@ -2894,6 +3434,7 @@ function resolveEndTurnRules(game: GameState, seat: Seat, catalog: Map<string, C
       heal(game, { type: "hero", seat }, 3, catalog);
       heal(game, { type: "hero", seat: other(seat) }, 3, catalog);
     }
+    if (!minion.silenced && hasRule(card, "beast_generic_end_turn")) beastGenericEndTurn(game, seat, minion, card, catalog);
   }
 }
 
@@ -2949,7 +3490,7 @@ function applyEffects(game: GameState, context: EffectContext, catalog: Map<stri
   for (const effect of context.sourceCard.effects) {
     const trigger = effect.trigger ?? "play";
     if (trigger !== context.trigger) continue;
-    const targets = resolveEffectTargets(game, effect, context);
+    const targets = resolveEffectTargets(game, effect, context, catalog);
     if (effect.type === "gain_mana") {
       const player = game.players[context.sourceOwner];
       const before = player.mana;
@@ -2994,30 +3535,30 @@ function applyEffects(game: GameState, context: EffectContext, catalog: Map<stri
   }
 }
 
-function resolveEffectTargets(game: GameState, effect: CardEffect, context: EffectContext): TargetRef[] {
+function resolveEffectTargets(game: GameState, effect: CardEffect, context: EffectContext, catalog: Map<string, CardDefinition>): TargetRef[] {
   const targetKind = effect.target ?? "none";
   const enemy = other(context.sourceOwner);
   if (targetKind === "none") return [];
   if (targetKind === "selected") {
     if (!context.selectedTarget) throw new Error("需要选择目标。");
-    if (isUntouchableTarget(game, context.selectedTarget)) throw new Error("这个随从无法成为目标。");
+    if (isUntouchableTarget(game, context.selectedTarget, catalog)) throw new Error("这个随从无法成为目标。");
     return [context.selectedTarget];
   }
   if (targetKind === "own_hero") return [{ type: "hero", seat: context.sourceOwner }];
   if (targetKind === "enemy_hero") return [{ type: "hero", seat: enemy }];
-  if (targetKind === "all_enemies") return [{ type: "hero", seat: enemy }, ...touchableMinionTargets(game.players[enemy].board, enemy)];
-  if (targetKind === "all_enemy_minions") return touchableMinionTargets(game.players[enemy].board, enemy);
-  if (targetKind === "all_minions") return game.players.flatMap((player) => touchableMinionTargets(player.board, player.seat));
+  if (targetKind === "all_enemies") return [{ type: "hero", seat: enemy }, ...touchableMinionTargets(game, enemy, catalog)];
+  if (targetKind === "all_enemy_minions") return touchableMinionTargets(game, enemy, catalog);
+  if (targetKind === "all_minions") return game.players.flatMap((player) => touchableMinionTargets(game, player.seat, catalog));
   if (targetKind === "any_minion") {
     if (!context.selectedTarget || context.selectedTarget.type !== "minion") throw new Error("需要选择一个随从。");
-    if (isUntouchableTarget(game, context.selectedTarget)) throw new Error("这个随从无法成为目标。");
+    if (isUntouchableTarget(game, context.selectedTarget, catalog)) throw new Error("这个随从无法成为目标。");
     return [context.selectedTarget];
   }
   if (targetKind === "friendly_minion" || targetKind === "enemy_minion") {
     if (!context.selectedTarget || context.selectedTarget.type !== "minion") throw new Error("需要选择一个随从。");
     const expectedSeat = targetKind === "friendly_minion" ? context.sourceOwner : enemy;
     if (context.selectedTarget.seat !== expectedSeat) throw new Error("目标阵营不合法。");
-    if (isUntouchableTarget(game, context.selectedTarget)) throw new Error("这个随从无法成为目标。");
+    if (isUntouchableTarget(game, context.selectedTarget, catalog)) throw new Error("这个随从无法成为目标。");
     return [context.selectedTarget];
   }
   return [];
@@ -3084,7 +3625,9 @@ function summon(game: GameState, seat: Seat, cardId: string, amount: number, cat
   const player = game.players[seat];
   for (let index = 0; index < amount && occupiedBoardSlots(player) < GAME_RULES.maxBoardSize; index += 1) {
     const minion = createBoardMinion(applyCrystalCoreToInstance(game, seat, createInstance(cardId, seat), catalog), card, game.turn);
+    applyBeastSummonState(game, seat, minion, card, catalog);
     player.board.push(minion);
+    triggerColossalOnSummon(game, seat, card, catalog);
     addLog(game, `${player.nickname} 召唤了 ${card.name}。`);
   }
 }
@@ -3113,7 +3656,7 @@ function summonBoardCopy(game: GameState, seat: Seat, source: BoardMinion, catal
 
 function dealDamage(game: GameState, target: TargetRef, amount: number, sourceOwner: Seat, catalog: Map<string, CardDefinition>, lifesteal: boolean): void {
   if (amount <= 0) return;
-  if (isUntouchableTarget(game, target)) return;
+  if (isUntouchableTarget(game, target, catalog)) return;
   const resolved = getTarget(game, target);
   let dealt = amount;
   if (resolved.kind === "hero") {
@@ -3140,18 +3683,22 @@ function dealDamage(game: GameState, target: TargetRef, amount: number, sourceOw
       dealt = 0;
       addLog(game, `${getCard(catalog, resolved.minion.cardId).name} 的圣盾抵消了伤害。`);
     } else {
-      resolved.minion.health -= amount;
-      addLog(game, `${game.players[sourceOwner].nickname} 对 ${targetName(game, target, catalog)} 造成 ${amount} 点伤害。`);
+      const minionCard = getCard(catalog, resolved.minion.cardId);
+      const actualAmount = !resolved.minion.silenced && hasRule(minionCard, "beast_generic_damage") && minionCard.text.includes("每次只能受到1点") ? Math.min(1, amount) : amount;
+      resolved.minion.health -= actualAmount;
+      dealt = actualAmount;
+      addLog(game, `${game.players[sourceOwner].nickname} 对 ${targetName(game, target, catalog)} 造成 ${actualAmount} 点伤害。`);
       if (!resolved.minion.silenced && hasRule(getCard(catalog, resolved.minion.cardId), "mage_acolyte_of_pain")) {
         drawCards(game, resolved.minion.owner, 1, catalog, true);
       }
+      if (!resolved.minion.silenced && hasRule(minionCard, "beast_generic_damage")) beastGenericDamageTrigger(game, resolved.minion.owner, resolved.minion, minionCard, actualAmount, catalog);
     }
   }
   if (lifesteal && dealt > 0) heal(game, { type: "hero", seat: sourceOwner }, dealt, catalog);
 }
 
 function heal(game: GameState, target: TargetRef, amount: number, catalog: Map<string, CardDefinition>): void {
-  if (isUntouchableTarget(game, target)) return;
+  if (isUntouchableTarget(game, target, catalog)) return;
   const resolved = getTarget(game, target);
   let restored = 0;
   if (resolved.kind === "hero") {
@@ -3169,7 +3716,7 @@ function heal(game: GameState, target: TargetRef, amount: number, catalog: Map<s
 }
 
 function buff(game: GameState, target: TargetRef, attack: number, health: number, catalog: Map<string, CardDefinition>): void {
-  if (isUntouchableTarget(game, target)) return;
+  if (isUntouchableTarget(game, target, catalog)) return;
   const resolved = getTarget(game, target);
   if (resolved.kind !== "minion") throw new Error("只能强化随从。");
   applyStatEffect(resolved.minion, attack, health);
@@ -3177,7 +3724,7 @@ function buff(game: GameState, target: TargetRef, attack: number, health: number
 }
 
 function destroy(game: GameState, target: TargetRef, catalog: Map<string, CardDefinition>): void {
-  if (isUntouchableTarget(game, target)) return;
+  if (isUntouchableTarget(game, target, catalog)) return;
   const resolved = getTarget(game, target);
   if (resolved.kind === "hero") {
     resolved.hero.health = 0;
@@ -3188,7 +3735,7 @@ function destroy(game: GameState, target: TargetRef, catalog: Map<string, CardDe
 }
 
 function silence(game: GameState, target: TargetRef, catalog: Map<string, CardDefinition>): void {
-  if (isUntouchableTarget(game, target)) return;
+  if (isUntouchableTarget(game, target, catalog)) return;
   const resolved = getTarget(game, target);
   if (resolved.kind !== "minion") throw new Error("只能沉默随从。");
   const card = getCard(catalog, resolved.minion.cardId);
@@ -3215,6 +3762,7 @@ function cleanupDeaths(game: GameState, catalog: Map<string, CardDefinition>): v
       player.board = player.board.filter((minion) => minion.health > 0);
       for (const minion of dead) {
         const card = getCard(catalog, minion.cardId);
+        reduceCorridorCreepersInHands(game, catalog);
         player.graveyard.push(card.id);
         countCeaselessEvent(game, "随从被摧毁");
         addLog(game, `${card.name} 被消灭。`);
@@ -3226,15 +3774,17 @@ function cleanupDeaths(game: GameState, catalog: Map<string, CardDefinition>): v
         if (!minion.silenced && hasRule(card, "hunter_raptor_nest_caretaker")) raptorNestCaretakerDeathrattle(game, player.seat, catalog, card.name);
         if (!minion.silenced && hasRule(card, "hunter_blazing_cinder")) dealRandomEnemyDamage(game, player.seat, 2, catalog, card.name);
         if (!minion.silenced && card.id === "companion_beast_savannah_highmane") summon(game, player.seat, "companion_token_hyena", 2, catalog);
+        if (!minion.silenced && hasRule(card, "beast_magmaw_limb")) magmawLimbDeathrattle(game, player.seat, catalog, card.name);
+        if (!minion.silenced && hasRule(card, "beast_generic_deathrattle")) beastGenericDeathrattle(game, player.seat, minion, card, catalog);
       }
       changed = true;
     }
   }
 }
 
-function enforceTaunt(game: GameState, attackerSeat: Seat, target: TargetRef): void {
+function enforceTaunt(game: GameState, attackerSeat: Seat, target: TargetRef, catalog: Map<string, CardDefinition>): void {
   const defender = game.players[other(attackerSeat)];
-  const hasTaunt = defender.board.some((minion) => minion.keywords.includes("taunt") && !minion.untouchable);
+  const hasTaunt = defender.board.some((minion) => minion.keywords.includes("taunt") && !isMinionUntouchable(game, defender.seat, minion, catalog));
   if (!hasTaunt) return;
   if (target.type !== "minion") throw new Error("必须优先攻击具有嘲讽的随从。");
   const minion = findMinion(game, target);
@@ -3266,15 +3816,15 @@ function markTitanAbilityUsed(game: GameState, seat: Seat, sourceInstanceId: str
   if (!titanHasRemainingAbilities(source, catalog)) source.cannotAttack = false;
 }
 
-function canMinionAttack(minion: BoardMinion, target: TargetRef, turn: number, catalog: Map<string, CardDefinition>): boolean {
+function canMinionAttack(game: GameState, seat: Seat, minion: BoardMinion, target: TargetRef, turn: number, catalog: Map<string, CardDefinition>): boolean {
   if (titanHasRemainingAbilities(minion, catalog)) return false;
   if (minion.cannotAttack) return false;
   if ((minion.frozenUntilTurn ?? -1) >= turn) return false;
-  if (minion.attack <= 0) return false;
+  if (minionAttackValue(game, seat, minion, catalog) <= 0) return false;
   const limit = minion.keywords.includes("windfury") ? 2 : 1;
   if (minion.attacksThisTurn >= limit) return false;
   if (minion.summonedTurn === turn) {
-    if (minion.keywords.includes("charge")) return true;
+    if (minion.keywords.includes("charge") || hasTundraRhinoCharge(game, seat, minion, catalog)) return true;
     if (minion.keywords.includes("rush")) return target.type === "minion";
     return false;
   }
@@ -3310,6 +3860,15 @@ function applyStatEffect(minion: BoardMinion, attack: number, health: number): v
   minion.attack += attack;
   minion.maxHealth = Math.max(0, minion.maxHealth + health);
   minion.health = Math.min(Math.max(0, minion.health + health), minion.maxHealth);
+}
+
+function minionAttackValue(game: GameState, seat: Seat, minion: BoardMinion, catalog: Map<string, CardDefinition>): number {
+  const leokkBonus = game.players[seat].board.filter((ally) =>
+    ally.instanceId !== minion.instanceId &&
+    !ally.silenced &&
+    hasRule(getCard(catalog, ally.cardId), "beast_leokk_aura")
+  ).length;
+  return minion.attack + leokkBonus;
 }
 
 function setAttackByEffect(minion: BoardMinion, attack: number): void {
@@ -3386,12 +3945,26 @@ function findMinion(game: GameState, target: TargetRef): BoardMinion | undefined
   return game.players[target.seat].board.find((minion) => minion.instanceId === target.instanceId);
 }
 
-function isUntouchableTarget(game: GameState, target: TargetRef): boolean {
-  return target.type === "minion" && Boolean(findMinion(game, target)?.untouchable);
+function isUntouchableTarget(game: GameState, target: TargetRef, catalog?: Map<string, CardDefinition>): boolean {
+  if (target.type !== "minion") return false;
+  const minion = findMinion(game, target);
+  return Boolean(minion && isMinionUntouchable(game, target.seat, minion, catalog));
 }
 
-function touchableMinionTargets(minions: BoardMinion[], seat: Seat): TargetRef[] {
-  return minions.filter((minion) => !minion.untouchable).map((minion) => ({ type: "minion" as const, seat, instanceId: minion.instanceId }));
+function touchableMinionTargets(game: GameState, seat: Seat, catalog: Map<string, CardDefinition>): TargetRef[] {
+  return game.players[seat].board.filter((minion) => !isMinionUntouchable(game, seat, minion, catalog)).map((minion) => ({ type: "minion" as const, seat, instanceId: minion.instanceId }));
+}
+
+function isMinionUntouchable(game: GameState | undefined, seat: Seat, minion: BoardMinion, catalog: Map<string, CardDefinition> | undefined): boolean {
+  if (minion.untouchable) return true;
+  if (!game || !catalog) return false;
+  if (!minion.silenced && game.currentPlayer !== seat && hasRule(getCard(catalog, minion.cardId), "beast_loot_spellward")) return true;
+  return game.players[seat].board.some((otherMinion) =>
+    otherMinion.instanceId !== minion.instanceId &&
+    !otherMinion.silenced &&
+    hasRule(getCard(catalog, otherMinion.cardId), "beast_red_herring") &&
+    !hasRule(getCard(catalog, minion.cardId), "beast_red_herring")
+  );
 }
 
 function getTarget(game: GameState, target: TargetRef): { kind: "hero"; hero: PlayerGameState["hero"] } | { kind: "minion"; minion: BoardMinion } {

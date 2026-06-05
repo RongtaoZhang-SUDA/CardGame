@@ -668,7 +668,7 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
         </div>
       )}
 
-      {game.pendingChoice && pending?.kind !== "choice" && (
+      {choiceForSelf && pending?.kind !== "choice" && (
         <div className="choice-overlay">
           <div className="choice-modal">
             <p className="eyebrow">Choose One</p>

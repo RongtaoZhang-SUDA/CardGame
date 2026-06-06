@@ -30,6 +30,7 @@ export type Keyword =
   | "battlecry"
   | "windfury"
   | "poisonous"
+  | "reborn"
   | "spell_damage";
 
 export type CardRuleTag =
@@ -407,6 +408,7 @@ export interface BoardMinion extends CardInstance {
   borrowedFromSeat?: Seat;
   usedTitanAbilityCardIds?: string[];
   titanAbilityUsedTurn?: number;
+  rebornUsed?: boolean;
 }
 
 export interface BoardLocation extends CardInstance {
@@ -543,6 +545,23 @@ export interface GameLogEntry {
   message: string;
 }
 
+export type PlayedCardKind = "played" | "secret_set" | "secret_triggered" | "countered" | "forged" | "location_used" | "hero_power";
+
+export interface PlayedCardEntry {
+  id: number;
+  at: string;
+  turn: number;
+  seat: Seat;
+  cardId?: string;
+  cardName?: string;
+  cardType?: CardType;
+  cardCost?: number;
+  sourceInstanceId?: string;
+  kind: PlayedCardKind;
+  hidden?: boolean;
+  revealed?: boolean;
+}
+
 export type GamePhase = "mulligan" | "playing" | "finished";
 
 export type PendingChoiceKind =
@@ -552,6 +571,7 @@ export type PendingChoiceKind =
   | "copy_enemy_hand"
   | "discover_to_hand"
   | "card_choice"
+  | "animal_companion_pool"
   | "titan_ability"
   | "amanthul_second_enemy"
   | "kiljaeden_demon"
@@ -598,6 +618,7 @@ export interface GameState {
   players: [PlayerGameState, PlayerGameState];
   pendingChoice?: PendingChoice;
   logs: GameLogEntry[];
+  playedCards?: PlayedCardEntry[];
   ceaselessEvents?: number;
   ceaselessTrackingStarted?: boolean;
   startTurnQueue?: StartTurnQueue;
@@ -612,6 +633,7 @@ export interface PublicGameState extends Omit<GameState, "players" | "pendingCho
 export type GameAction =
   | { type: "mulligan"; cardInstanceIds: string[] }
   | { type: "play_card"; handInstanceId: string; target?: TargetRef }
+  | { type: "trade_card"; handInstanceId: string }
   | { type: "forge_card"; handInstanceId: string }
   | { type: "use_location"; locationInstanceId: string; target?: TargetRef }
   | { type: "use_titan_ability"; minionInstanceId: string }

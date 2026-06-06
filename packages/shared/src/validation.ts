@@ -4,7 +4,7 @@ import type { CardDefinition, CardEffect, CollectibleClass, DeckDefinition, Vali
 const cardTypes = ["minion", "spell", "weapon", "location", "hero", "hero_power"];
 const rarities = ["common", "rare", "epic", "legendary"];
 const statuses = ["draft", "published", "disabled"];
-const keywords = ["taunt", "charge", "rush", "divine_shield", "lifesteal", "deathrattle", "battlecry", "windfury", "poisonous", "spell_damage"];
+const keywords = ["taunt", "charge", "rush", "divine_shield", "lifesteal", "deathrattle", "battlecry", "windfury", "poisonous", "reborn", "spell_damage"];
 
 export function validateCard(card: Partial<CardDefinition>): ValidationResult {
   const errors: string[] = [];

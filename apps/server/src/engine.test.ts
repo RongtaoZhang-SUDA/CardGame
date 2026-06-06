@@ -695,7 +695,8 @@ describe("game engine", () => {
     game.currentPlayer = 1;
     game.players[0].deck = [
       { instanceId: "quickdraw_now", cardId: quickdrawArmor.id, owner: 0, origin: "starting_deck" },
-      { instanceId: "quickdraw_later", cardId: quickdrawArmor.id, owner: 0, origin: "starting_deck" }
+      { instanceId: "quickdraw_later", cardId: quickdrawArmor.id, owner: 0, origin: "starting_deck" },
+      { instanceId: "quickdraw_padding", cardId: "neutral_squire", owner: 0, origin: "starting_deck" }
     ];
 
     applyGameAction(game, "B", { type: "end_turn" }, cards);
@@ -890,6 +891,9 @@ describe("game engine", () => {
     expect(toPublicGameState(game, "A").players[0].secrets[0].cardId).toBe("freeze_mage_ice_barrier");
     expect(toPublicGameState(game, "B").players[0].secrets[0].hidden).toBe(true);
     expect(toPublicGameState(game, "B").players[0].secrets[0].cardId).toBeUndefined();
+    expect(toPublicGameState(game, "A").playedCards?.at(-1)?.cardId).toBe("freeze_mage_ice_barrier");
+    expect(toPublicGameState(game, "B").playedCards?.at(-1)?.hidden).toBe(true);
+    expect(toPublicGameState(game, "B").playedCards?.at(-1)?.cardId).toBeUndefined();
 
     game.currentPlayer = 1;
     game.players[1].board.push({
@@ -912,6 +916,9 @@ describe("game engine", () => {
     expect(game.players[0].graveyard).toContain("freeze_mage_ice_barrier");
     expect(game.players[0].hero.armor).toBe(7);
     expect(game.logs.length).toBeGreaterThan(0);
+    expect(toPublicGameState(game, "B").playedCards?.some((entry) => entry.kind === "secret_set" && entry.cardId === "freeze_mage_ice_barrier" && entry.revealed)).toBe(true);
+    expect(toPublicGameState(game, "B").playedCards?.at(-1)?.kind).toBe("secret_triggered");
+    expect(toPublicGameState(game, "B").playedCards?.at(-1)?.cardId).toBe("freeze_mage_ice_barrier");
   });
 
   it("prevents lethal damage with Ice Block and grants same-turn immunity", () => {
@@ -1103,5 +1110,166 @@ describe("game engine", () => {
     expect(boardCopy).toMatchObject({ attack: 3, health: 4, maxHealth: 4, keywords: ["taunt"], statEffects: { attack: 2, health: 2 } });
     expect(game.players[0].hand.some((card) => card.cardId === "neutral_squire")).toBe(true);
     expect(game.players[0].deck.some((card) => card.cardId === "neutral_squire")).toBe(true);
+  });
+
+  it("applies fatigue damage to armor before health", () => {
+    const game = createGame("FATIGUE_ARMOR", [
+      { nickname: "A", class: "warden", deck: deck("A", "warden", Array(30).fill("neutral_squire")) },
+      { nickname: "B", class: "arcanist", deck: deck("B", "arcanist", Array(30).fill("neutral_squire")) }
+    ], sampleCards, 173);
+    game.phase = "playing";
+    game.currentPlayer = 1;
+    game.turn = 3;
+    game.players[0].deck = [];
+    game.players[0].hero.armor = 3;
+    game.players[0].hero.health = 30;
+
+    applyGameAction(game, "B", { type: "end_turn" }, sampleCards);
+
+    expect(game.players[0].fatigue).toBe(1);
+    expect(game.players[0].hero.armor).toBe(2);
+    expect(game.players[0].hero.health).toBe(30);
+  });
+
+  it("lets divine shield block poisonous damage before poison is applied", () => {
+    const game = createGame("POISON_SHIELD", [
+      { nickname: "A", class: "hunter", deck: deck("A", "hunter", Array(30).fill("neutral_squire")) },
+      { nickname: "B", class: "warden", deck: deck("B", "warden", Array(30).fill("neutral_squire")) }
+    ], sampleCards, 174);
+    game.phase = "playing";
+    game.currentPlayer = 0;
+    game.turn = 4;
+    game.players[0].board = [{
+      instanceId: "poisonous",
+      cardId: "beast_token_spider_poison_rush",
+      owner: 0,
+      attack: 1,
+      health: 1,
+      maxHealth: 1,
+      keywords: ["poisonous", "rush"],
+      exhausted: false,
+      summonedTurn: 0,
+      attacksThisTurn: 0,
+      silenced: false,
+      temporaryAttack: 0
+    }];
+    game.players[1].board = [{
+      instanceId: "shielded",
+      cardId: "neutral_knight",
+      owner: 1,
+      attack: 4,
+      health: 4,
+      maxHealth: 4,
+      keywords: ["divine_shield"],
+      exhausted: false,
+      summonedTurn: 0,
+      attacksThisTurn: 0,
+      silenced: false,
+      temporaryAttack: 0
+    }];
+
+    applyGameAction(game, "A", { type: "attack", source: { type: "minion", seat: 0, instanceId: "poisonous" }, target: { type: "minion", seat: 1, instanceId: "shielded" } }, sampleCards);
+
+    expect(game.players[1].board).toHaveLength(1);
+    expect(game.players[1].board[0]).toMatchObject({ instanceId: "shielded", health: 4, keywords: [] });
+    expect(game.players[0].board).toHaveLength(0);
+  });
+
+  it("reborns Invincible and buffs another friendly Undead", () => {
+    const game = createGame("REBORN_UNDEAD", [
+      { nickname: "A", class: "hunter", deck: deck("A", "hunter", Array(30).fill("neutral_squire")) },
+      { nickname: "B", class: "arcanist", deck: deck("B", "arcanist", Array(30).fill("neutral_squire")) }
+    ], sampleCards, 175);
+    game.phase = "playing";
+    game.currentPlayer = 1;
+    game.turn = 6;
+    game.players[1].mana = 2;
+    game.players[1].hand = [{ instanceId: "archer", cardId: "neutral_archer", owner: 1, origin: "starting_deck" }];
+    game.players[0].board = [
+      {
+        instanceId: "invincible",
+        cardId: "beast_pool_rlk_592",
+        owner: 0,
+        attack: 5,
+        health: 1,
+        maxHealth: 5,
+        keywords: ["reborn"],
+        exhausted: false,
+        summonedTurn: 0,
+        attacksThisTurn: 0,
+        silenced: false,
+        temporaryAttack: 0
+      },
+      {
+        instanceId: "undead",
+        cardId: "reno_priest_psychic_conjurer",
+        owner: 0,
+        attack: 1,
+        health: 2,
+        maxHealth: 2,
+        keywords: [],
+        exhausted: false,
+        summonedTurn: 0,
+        attacksThisTurn: 0,
+        silenced: false,
+        temporaryAttack: 0
+      }
+    ];
+
+    applyGameAction(game, "B", { type: "play_card", handInstanceId: "archer", target: { type: "minion", seat: 0, instanceId: "invincible" } }, sampleCards);
+
+    const buffed = game.players[0].board.find((minion) => minion.instanceId === "undead")!;
+    const reborn = game.players[0].board.find((minion) => minion.cardId === "beast_pool_rlk_592")!;
+    expect(buffed).toMatchObject({ attack: 6, health: 7, maxHealth: 7 });
+    expect(buffed.keywords).toContain("taunt");
+    expect(reborn).toMatchObject({ health: 1, rebornUsed: true });
+    expect(reborn.keywords).not.toContain("reborn");
+  });
+
+  it("trades a tradeable card for one mana by shuffling it into deck and drawing", () => {
+    const game = createGame("TRADE", [
+      { nickname: "A", class: "hunter", deck: deck("A", "hunter", Array(30).fill("neutral_squire")) },
+      { nickname: "B", class: "arcanist", deck: deck("B", "arcanist", Array(30).fill("neutral_squire")) }
+    ], sampleCards, 176);
+    game.phase = "playing";
+    game.currentPlayer = 0;
+    game.turn = 5;
+    game.players[0].mana = 1;
+    game.players[0].hand = [{ instanceId: "heart", cardId: "companion_hunter_heart_of_stranglethorn", owner: 0, origin: "starting_deck" }];
+    game.players[0].deck = [{ instanceId: "draw", cardId: "neutral_squire", owner: 0, origin: "starting_deck" }];
+
+    applyGameAction(game, "A", { type: "trade_card", handInstanceId: "heart" }, sampleCards);
+
+    expect(game.players[0].mana).toBe(0);
+    expect(game.players[0].hand).toHaveLength(1);
+    expect(game.players[0].deck).toHaveLength(1);
+    expect([...game.players[0].hand, ...game.players[0].deck].map((card) => card.cardId).sort()).toEqual(["companion_hunter_heart_of_stranglethorn", "neutral_squire"]);
+    expect(game.players[0].graveyard).not.toContain("companion_hunter_heart_of_stranglethorn");
+  });
+
+  it("lets Elise summon Titan copies that can use a Titan ability immediately", () => {
+    const game = createGame("ELISE_TITAN", [
+      { nickname: "A", class: "priest", deck: deck("A", "priest", Array(30).fill("neutral_squire")) },
+      { nickname: "B", class: "druid", deck: deck("B", "druid", Array(30).fill("neutral_squire")) }
+    ], sampleCards, 177);
+    game.phase = "playing";
+    game.currentPlayer = 0;
+    game.turn = 8;
+    game.players[0].mana = 8;
+    game.players[0].hand = [{ instanceId: "elise", cardId: "reno_priest_elise_badlands", owner: 0, origin: "starting_deck" }];
+    game.players[0].deck = [
+      { instanceId: "amanthul_deck", cardId: "reno_priest_amanthul", owner: 0, origin: "starting_deck" },
+      { instanceId: "yogg_deck", cardId: "reno_priest_yogg_unleashed", owner: 0, origin: "starting_deck" },
+      { instanceId: "squire_deck", cardId: "neutral_squire", owner: 0, origin: "starting_deck" },
+      { instanceId: "guard_deck", cardId: "neutral_guard", owner: 0, origin: "starting_deck" }
+    ];
+
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "elise" }, sampleCards);
+    const titan = game.players[0].board.find((minion) => minion.cardId === "reno_priest_amanthul" || minion.cardId === "reno_priest_yogg_unleashed")!;
+
+    applyGameAction(game, "A", { type: "use_titan_ability", minionInstanceId: titan.instanceId }, sampleCards);
+
+    expect(titan).toMatchObject({ attack: 5, health: 5, maxHealth: 5, cannotAttack: true });
+    expect(game.pendingChoice?.kind).toBe("titan_ability");
   });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DeckDefinition } from "@dormstone/shared";
 import { companionHunterDeckCardIds } from "./companionHunter.js";
 import { getDeckTemplate } from "./deckTemplates.js";
-import { applyGameAction, createGame } from "./engine.js";
+import { applyGameAction, createGame, toPublicGameState } from "./engine.js";
 import { sampleCards } from "./sampleCards.js";
 
 function deck(owner: string, cardIds: string[]): DeckDefinition {
@@ -138,9 +138,35 @@ describe("Companion Hunter", () => {
     expect(game.players[0].animalCompanionReplacementCost).toBe(5);
     const fiveCostPool = game.players[0].animalCompanionReplacementPools?.["5"] ?? [];
     expect(fiveCostPool).toHaveLength(3);
+    expect(toPublicGameState(game, "A").players[0].animalCompanionReplacementPools?.["4"]).toEqual(fourCostPool);
+    expect(toPublicGameState(game, "B").players[0].animalCompanionReplacementPools).toBeUndefined();
     game.players[0].mana = 10;
     applyGameAction(game, "A", { type: "play_card", handInstanceId: "animal3" }, sampleCards);
     expect(fiveCostPool).toContain(game.players[0].board.at(-1)?.cardId);
+  });
+
+  it("shows upgraded Beast pool options for Spirit Bond Hunter", () => {
+    const game = gameForCompanion(321);
+    game.players[0].hand = [
+      { instanceId: "tame", cardId: "companion_hunter_tame_beast", owner: 0 },
+      { instanceId: "spirit", cardId: "companion_hunter_spirit_bond_hunter", owner: 0 }
+    ];
+
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "tame" }, sampleCards);
+    const fourCostPool = [...(game.players[0].animalCompanionReplacementPools?.["4"] ?? [])];
+    game.players[0].mana = 10;
+    applyGameAction(game, "A", { type: "play_card", handInstanceId: "spirit" }, sampleCards);
+
+    const choice = game.pendingChoice;
+    expect(choice?.kind).toBe("animal_companion_pool");
+    expect(choice?.options.map((option) => option.cardId).sort()).toEqual([...fourCostPool].sort());
+    expect(choice?.options.some((option) => option.cardId.startsWith("companion_choice_"))).toBe(false);
+
+    const picked = choice!.options[0];
+    applyGameAction(game, "A", { type: "choose", choiceId: choice!.id, optionInstanceId: picked.instanceId }, sampleCards);
+
+    expect(game.players[0].board.some((minion) => minion.cardId === picked.cardId)).toBe(true);
+    expect(game.players[0].board.some((minion) => minion.cardId.startsWith("companion_token_"))).toBe(false);
   });
 
   it("implements Wound Prey damage plus a rushing Beast token", () => {

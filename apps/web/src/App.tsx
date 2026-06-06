@@ -2,7 +2,7 @@ import { Ban, CheckCircle2, DoorOpen, Hammer, LogIn, Plus, RefreshCcw, Save, Shi
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { io, type Socket } from "socket.io-client";
-import { CARD_CLASSES, CLASS_LABELS, cardNeedsTarget, validateCard, type CardDefinition, type CardEffect, type DeckTemplate, type GameAction, type PlayerProfile, type PublicGameState, type RoomState, type TargetRef } from "@dormstone/shared";
+import { CARD_CLASSES, CLASS_LABELS, cardNeedsTarget, validateCard, type CardDefinition, type CardEffect, type DeckTemplate, type GameAction, type PlayedCardEntry, type PlayerProfile, type PublicGameState, type RoomState, type Seat, type TargetRef } from "@dormstone/shared";
 
 type ApiEnvelope<T> = { ok: true; data: T } | { ok: false; error: string };
 type Tab = "lobby" | "decks" | "editor" | "battle";
@@ -412,6 +412,8 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
   const opponent = game.players[game.viewerSeat === 0 ? 1 : 0];
   const [mulligan, setMulligan] = useState<Set<string>>(new Set());
   const [pending, setPending] = useState<null | { kind: "play"; handInstanceId: string } | { kind: "location"; locationInstanceId: string } | { kind: "attack"; source: TargetRef } | { kind: "hero_power" } | { kind: "choice"; choiceId: string; optionInstanceId: string }>(null);
+  const [castingCardIds, setCastingCardIds] = useState<Set<string>>(new Set());
+  const castingTimers = useRef<number[]>([]);
   const choiceForSelf = game.pendingChoice?.seat === game.viewerSeat ? game.pendingChoice : undefined;
   const hasBlockingChoice = Boolean(game.pendingChoice);
   const isTurn = game.phase === "playing" && game.currentPlayer === game.viewerSeat && !hasBlockingChoice;
@@ -431,17 +433,23 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
     : pending?.kind === "location" ? "请选择地标目标"
     : "";
 
-  const [dismissedCompanionPools, setDismissedCompanionPools] = useState<Set<string>>(new Set());
+  const companionPoolStorageKey = `dormstone.seenCompanionPools:${game.id}:${game.viewerSeat}`;
+  const [dismissedCompanionPools, setDismissedCompanionPools] = useState<Set<string>>(() => readStringSet(companionPoolStorageKey));
   const [activeCompanionPool, setActiveCompanionPool] = useState<CompanionPoolNotice | null>(null);
-  const companionPoolEntries = useMemo<CompanionPoolNotice[]>(() => game.players.flatMap((player) =>
+  const companionPoolEntries = useMemo<CompanionPoolNotice[]>(() => game.players.filter((player) => player.seat === game.viewerSeat).flatMap((player) =>
     Object.entries(player.animalCompanionReplacementPools ?? {}).map(([cost, cardIds]) => ({
       seat: player.seat,
       cost,
       cardIds,
       signature: `${game.roomCode}:${player.seat}:${cost}:${cardIds.join(",")}`
     }))
-  ), [game.players, game.roomCode]);
+  ), [game.players, game.roomCode, game.viewerSeat]);
   const seenQuestProgress = useRef<Record<number, number | undefined>>({});
+
+  useEffect(() => {
+    setDismissedCompanionPools(readStringSet(companionPoolStorageKey));
+    setActiveCompanionPool(null);
+  }, [companionPoolStorageKey]);
 
   useEffect(() => {
     for (const player of [self, opponent]) {
@@ -459,17 +467,58 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
   useEffect(() => {
     if (activeCompanionPool && companionPoolEntries.some((entry) => entry.signature === activeCompanionPool.signature)) return;
     const nextPool = companionPoolEntries.find((entry) => !dismissedCompanionPools.has(entry.signature));
+    if (nextPool) {
+      setDismissedCompanionPools((previous) => {
+        const next = new Set(previous);
+        next.add(nextPool.signature);
+        localStorage.setItem(companionPoolStorageKey, JSON.stringify([...next]));
+        return next;
+      });
+    }
     setActiveCompanionPool(nextPool ?? null);
-  }, [activeCompanionPool, companionPoolEntries, dismissedCompanionPools]);
+  }, [activeCompanionPool, companionPoolEntries, companionPoolStorageKey, dismissedCompanionPools]);
 
-  async function send(action: GameAction) {
-    await emitAck(socket, "game:action", { action });
-    setPending(null);
+  useEffect(() => () => {
+    for (const timer of castingTimers.current) window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const handIds = new Set(self.hand.map((card) => card.instanceId));
+    setCastingCardIds((previous) => {
+      const next = new Set([...previous].filter((id) => handIds.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [self.hand]);
+
+  function clearCastingCard(instanceId: string) {
+    setCastingCardIds((previous) => {
+      if (!previous.has(instanceId)) return previous;
+      const next = new Set(previous);
+      next.delete(instanceId);
+      return next;
+    });
+  }
+
+  function markCastingCard(instanceId: string) {
+    setCastingCardIds((previous) => new Set(previous).add(instanceId));
+    const timer = window.setTimeout(() => clearCastingCard(instanceId), 760);
+    castingTimers.current.push(timer);
+  }
+
+  async function send(action: GameAction, options?: { castingCardId?: string }) {
+    if (options?.castingCardId) markCastingCard(options.castingCardId);
+    try {
+      await emitAck(socket, "game:action", { action });
+      setPending(null);
+    } catch (error) {
+      if (options?.castingCardId) clearCastingCard(options.castingCardId);
+      throw error;
+    }
   }
 
   function chooseTarget(target: TargetRef) {
     if (!pending) return;
-    if (pending.kind === "play") send({ type: "play_card", handInstanceId: pending.handInstanceId, target }).catch(showError(setNotice));
+    if (pending.kind === "play") send({ type: "play_card", handInstanceId: pending.handInstanceId, target }, { castingCardId: pending.handInstanceId }).catch(showError(setNotice));
     if (pending.kind === "location") send({ type: "use_location", locationInstanceId: pending.locationInstanceId, target }).catch(showError(setNotice));
     if (pending.kind === "attack") send({ type: "attack", source: pending.source, target }).catch(showError(setNotice));
     if (pending.kind === "hero_power") send({ type: "hero_power", target }).catch(showError(setNotice));
@@ -522,6 +571,7 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
     <>
       <section className={`battle-layout ${pending ? "target-mode" : ""}`}>
         <div className="battle-main">
+          <PlayedCardAnimationLayer entries={game.playedCards ?? []} viewerSeat={game.viewerSeat} cardMap={cardMap} />
           <div className="opponent-hand-row" aria-label="对手手牌">
             {opponent.hand.map((_, index) => <div key={index} className="card-back">?</div>)}
           </div>
@@ -576,6 +626,8 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
               const playCost = cardPlayCost(card, instance.costOverride, self, opponent.board, game.turn, game.ceaselessEvents, cardMap);
               const playable = isTurn && playCost <= self.mana;
               const forgeable = isTurn && Boolean(card.forgeable) && !instance.forged && self.mana >= 2;
+              const tradeable = isTradeableCard(card);
+              const tradeablePlayable = isTurn && tradeable && self.mana >= 1;
               return (
                 <div key={instance.instanceId} className="hand-card-shell" style={handStyle(index, self.hand.length)}>
                   <CardTile
@@ -587,20 +639,29 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
                     forged={instance.forged}
                     disabled={!playable}
                     selected={pending?.kind === "play" && pending.handInstanceId === instance.instanceId}
-                    className={`hand-card ${playable ? "playable" : "unplayable"}`}
+                    className={`hand-card ${playable ? "playable" : "unplayable"} ${castingCardIds.has(instance.instanceId) ? "casting" : ""}`}
                     onClick={() => {
                       if (!playable) return;
                       if (card.type !== "location" && cardNeedsTarget(card)) setPending({ kind: "play", handInstanceId: instance.instanceId });
-                      else send({ type: "play_card", handInstanceId: instance.instanceId }).catch(showError(setNotice));
+                      else send({ type: "play_card", handInstanceId: instance.instanceId }, { castingCardId: instance.instanceId }).catch(showError(setNotice));
                     }}
                   />
                   {card.forgeable && (
                     <button className="forge-button" disabled={!forgeable} onClick={(event) => {
                       event.stopPropagation();
                       if (!forgeable) return;
-                      send({ type: "forge_card", handInstanceId: instance.instanceId }).catch(showError(setNotice));
+                      send({ type: "forge_card", handInstanceId: instance.instanceId }, { castingCardId: instance.instanceId }).catch(showError(setNotice));
                     }}>
                       <Hammer size={13} /> {instance.forged ? "已锻造" : "锻造 2"}
+                    </button>
+                  )}
+                  {tradeable && (
+                    <button className="forge-button trade-button" disabled={!tradeablePlayable} onClick={(event) => {
+                      event.stopPropagation();
+                      if (!tradeablePlayable) return;
+                      send({ type: "trade_card", handInstanceId: instance.instanceId }, { castingCardId: instance.instanceId }).catch(showError(setNotice));
+                    }}>
+                      <RefreshCcw size={13} /> 交易 1
                     </button>
                   )}
                 </div>
@@ -614,6 +675,7 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
             <strong>{self.mana}/{self.maxMana}</strong>
             <span>法力水晶</span>
           </div>
+          <PlayedCardsPanel entries={game.playedCards ?? []} viewerSeat={game.viewerSeat} cardMap={cardMap} />
           <div className="side-stats">
             <span>我方牌库 <b>{self.deckCount}</b></span>
             <span>对手手牌 <b>{opponent.hand.length}</b></span>
@@ -705,6 +767,162 @@ function Battlefield({ game, cards, socket, setNotice }: { game: PublicGameState
       )}
     </>
   );
+}
+
+function PlayedCardsPanel({ entries, viewerSeat, cardMap }: { entries: PlayedCardEntry[]; viewerSeat: Seat; cardMap: Map<string, CardDefinition> }) {
+  const [scope, setScope] = useState<"opponent" | "all">("opponent");
+  const shownEntries = useMemo(() => entries
+    .filter((entry) => entry.kind !== "forged")
+    .filter((entry) => scope === "all" || entry.seat !== viewerSeat)
+    .slice(-10)
+    .reverse(), [entries, scope, viewerSeat]);
+
+  return (
+    <section className="played-cards-panel" aria-label="出牌序列">
+      <div className="played-cards-heading">
+        <div>
+          <p className="eyebrow">Played</p>
+          <h3>{scope === "opponent" ? "对手出牌" : "双方出牌"}</h3>
+        </div>
+        <div className="played-cards-toggle" role="group" aria-label="切换出牌序列范围">
+          <button className={scope === "opponent" ? "active" : ""} onClick={() => setScope("opponent")}>对手</button>
+          <button className={scope === "all" ? "active" : ""} onClick={() => setScope("all")}>双方</button>
+        </div>
+      </div>
+      <div className="played-cards-list">
+        {shownEntries.length === 0 && <p className="played-cards-empty">{scope === "opponent" ? "等待对手出牌" : "暂无出牌记录"}</p>}
+        {shownEntries.map((entry) => <PlayedCardMiniTile key={entry.id} entry={entry} viewerSeat={viewerSeat} cardMap={cardMap} />)}
+      </div>
+    </section>
+  );
+}
+
+function PlayedCardMiniTile({ entry, viewerSeat, cardMap }: { entry: PlayedCardEntry; viewerSeat: Seat; cardMap: Map<string, CardDefinition> }) {
+  const card = entry.hidden ? undefined : cardMap.get(entry.cardId ?? "");
+  const { clearPreview, previewPosition, schedulePreview } = useBoardCardPreview(card);
+  const status = playedCardKindLabel(entry);
+  const cssKind = entry.hidden ? "hidden" : entry.kind === "secret_set" || entry.kind === "secret_triggered" ? "secret" : "";
+  const revealed = entry.revealed ? "revealed" : "";
+
+  return (
+    <article className={`played-card-mini ${cssKind} ${revealed}`} onMouseEnter={schedulePreview} onMouseLeave={clearPreview}>
+      <div className="played-card-mini-art" aria-hidden="true">
+        {entry.hidden ? <span>?</span> : card?.assetUrl ? <img src={card.assetUrl} alt="" /> : <span>{playedCardInitial(entry, card)}</span>}
+      </div>
+      <div className="played-card-mini-copy">
+        <strong>{playedCardName(entry, card)}</strong>
+        <small>{playedCardCost(entry, card)} 费 · {playedCardTypeLabel(entry, card)} · {seatName(entry.seat, viewerSeat)}</small>
+      </div>
+      <div className="played-card-mini-meta">
+        <span>T{entry.turn}</span>
+        <em>{status}</em>
+      </div>
+      {card && previewPosition && createPortal(
+        <div className="board-card-detail-popover" style={{ left: previewPosition.left, top: previewPosition.top }} aria-hidden="true">
+          <CardPreview card={card} className="board-card-preview-card" />
+        </div>,
+        document.body
+      )}
+    </article>
+  );
+}
+
+type ActivePlayedCardAnimation = PlayedCardEntry & { animationId: string };
+
+function PlayedCardAnimationLayer({ entries, viewerSeat, cardMap }: { entries: PlayedCardEntry[]; viewerSeat: Seat; cardMap: Map<string, CardDefinition> }) {
+  const [activeEntries, setActiveEntries] = useState<ActivePlayedCardAnimation[]>([]);
+  const initialized = useRef(false);
+  const maxSeenId = useRef(0);
+  const timers = useRef<number[]>([]);
+
+  useEffect(() => () => {
+    for (const timer of timers.current) window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const latestId = entries.reduce((largest, entry) => Math.max(largest, entry.id), 0);
+    if (!initialized.current) {
+      initialized.current = true;
+      maxSeenId.current = latestId;
+      return;
+    }
+
+    const newEntries = entries.filter((entry) => entry.id > maxSeenId.current && entry.kind !== "forged");
+    maxSeenId.current = Math.max(maxSeenId.current, latestId);
+    if (newEntries.length === 0) return;
+
+    const visuals = newEntries.map((entry) => ({ ...entry, animationId: `${entry.id}-${entry.at}` }));
+    setActiveEntries((previous) => [...previous, ...visuals].slice(-5));
+    for (const visual of visuals) {
+      const timer = window.setTimeout(() => {
+        setActiveEntries((previous) => previous.filter((entry) => entry.animationId !== visual.animationId));
+      }, 1180);
+      timers.current.push(timer);
+    }
+  }, [entries]);
+
+  if (activeEntries.length === 0) return null;
+
+  return (
+    <div className="played-card-animation-layer" aria-hidden="true">
+      {activeEntries.map((entry) => {
+        const card = entry.hidden ? undefined : cardMap.get(entry.cardId ?? "");
+        const cardType = card?.type ?? entry.cardType;
+        const kindClass = entry.kind === "secret_set" || entry.kind === "secret_triggered" ? "secret" : cardType === "spell" ? "spell" : cardType === "minion" ? "minion" : "equipment";
+        return (
+          <div key={entry.animationId} className={`played-card-burst ${entry.seat === viewerSeat ? "from-self" : "from-opponent"} ${kindClass} ${entry.kind === "secret_triggered" ? "revealed" : ""}`}>
+            <div className="played-card-flash" />
+            <div className={`played-card-burst-card ${entry.hidden ? "hidden" : ""}`}>
+              <span className="played-card-burst-cost">{playedCardCost(entry, card)}</span>
+              <div className="played-card-burst-art">
+                {entry.hidden ? <span>?</span> : card?.assetUrl ? <img src={card.assetUrl} alt="" /> : <span>{playedCardInitial(entry, card)}</span>}
+              </div>
+              <strong>{playedCardName(entry, card)}</strong>
+              <small>{playedCardTypeLabel(entry, card)} · {playedCardKindLabel(entry)}</small>
+            </div>
+            <span className="played-card-ripple" />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function playedCardName(entry: PlayedCardEntry, card?: CardDefinition): string {
+  if (entry.hidden) return "未知奥秘";
+  return card?.name ?? entry.cardName ?? (entry.kind === "hero_power" ? "英雄技能" : "未知卡牌");
+}
+
+function playedCardInitial(entry: PlayedCardEntry, card?: CardDefinition): string {
+  return (card?.name ?? entry.cardName ?? "?").slice(0, 1);
+}
+
+function playedCardCost(entry: PlayedCardEntry, card?: CardDefinition): string | number {
+  if (entry.hidden) return "?";
+  return entry.cardCost ?? card?.cost ?? "?";
+}
+
+function playedCardTypeLabel(entry: PlayedCardEntry, card?: CardDefinition): string {
+  if (entry.hidden) return "奥秘";
+  if (entry.kind === "secret_triggered") return "奥秘揭示";
+  return typeLabel(card?.type ?? entry.cardType ?? "spell");
+}
+
+function playedCardKindLabel(entry: PlayedCardEntry): string {
+  const labels: Record<PlayedCardEntry["kind"], string> = {
+    played: "使用",
+    secret_set: entry.hidden ? "未揭示" : "奥秘",
+    secret_triggered: "触发",
+    countered: "反制",
+    forged: "锻造",
+    location_used: "地标",
+    hero_power: "技能"
+  };
+  return labels[entry.kind];
+}
+
+function seatName(seat: Seat, viewerSeat: Seat): string {
+  return seat === viewerSeat ? "我方" : "对手";
 }
 
 function QuestTracker({ label, quest }: { label: string; quest: NonNullable<PublicGameState["players"][number]["quest"]> }) {
@@ -931,6 +1149,15 @@ function parseEffects(value: string): { ok: true; effects: CardEffect[] } | { ok
   }
 }
 
+function readStringSet(key: string): Set<string> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) ?? "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
 function toggleSet(source: Set<string>, value: string): Set<string> {
   const next = new Set(source);
   if (next.has(value)) next.delete(value);
@@ -952,6 +1179,10 @@ function cardPlayCost(card: CardDefinition, costOverride: number | undefined, pl
   const baseCost = player.avianaActive ? Math.min(printedOrOverriddenCost, 1) : card.type === "minion" && hasAviana ? 1 : printedOrOverriddenCost;
   const cost = Math.max(0, baseCost + spellTax - spellDiscount);
   return hasRazorscale ? Math.max(cost, 2) : cost;
+}
+
+function isTradeableCard(card: CardDefinition): boolean {
+  return card.text.includes("可交易") || /tradeable/i.test(card.text);
 }
 
 function heroPowerPlayCost(player: PublicGameState["players"][number], card: CardDefinition | undefined, cardMap: Map<string, CardDefinition>): number {
@@ -1015,6 +1246,7 @@ function keywordLabel(keyword: string): string {
     battlecry: "战吼",
     windfury: "风怒",
     poisonous: "剧毒",
+    reborn: "复生",
     spell_damage: "法强"
   };
   return labels[keyword] ?? keyword;
